@@ -39,19 +39,21 @@ class TickStats:
     refusals: int
     minutes: float
     jobs: list[str] = field(default_factory=list)
+    steers: int = 0
 
 
-def _log_stats(path: Path) -> tuple[int, int, int, int, float]:
+def _log_stats(path: Path) -> tuple[int, int, int, int, float, int]:
     if not path.exists():
-        return 0, 0, 0, 0, 0.0
+        return 0, 0, 0, 0, 0.0, 0
     entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     failed = sum(1 for e in entries if e.get("kind") == "run" and e.get("code") not in (0, None))
     errors = [e for e in entries if e.get("kind") == "error"]
     timeouts = sum(1 for e in errors if "wall-clock" in e.get("error", ""))
     refusals = sum(1 for e in entries if e.get("kind") == "refused")
+    steers = sum(1 for e in entries if e.get("kind") == "review" and e.get("verdict") == "steer")
     times = [e["t"] for e in entries if "t" in e]
     minutes = (max(times) - min(times)) / 60 if len(times) > 1 else 0.0
-    return failed, len(errors), timeouts, refusals, minutes
+    return failed, len(errors), timeouts, refusals, minutes, steers
 
 
 def collect_ticks(state_dir: Path) -> list[TickStats]:
@@ -59,7 +61,7 @@ def collect_ticks(state_dir: Path) -> list[TickStats]:
     for report_path in sorted((state_dir / "reports").glob("*.json")):
         report = json.loads(report_path.read_text(encoding="utf-8"))
         stamp = report.get("stamp", report_path.stem)
-        failed, errors, timeouts, refusals, minutes = _log_stats(state_dir / "runs" / f"{stamp}.jsonl")
+        failed, errors, timeouts, refusals, minutes, steers = _log_stats(state_dir / "runs" / f"{stamp}.jsonl")
         cost = COST.search(report.get("usage", ""))
         ticks.append(
             TickStats(
@@ -73,6 +75,7 @@ def collect_ticks(state_dir: Path) -> list[TickStats]:
                 refusals=refusals,
                 minutes=minutes,
                 jobs=sorted(set(JOB_ID.findall(json.dumps(report)))),
+                steers=steers,
             )
         )
     return ticks
@@ -102,13 +105,16 @@ def local_section(ticks: list[TickStats]) -> list[str]:
     lines = [
         "## Ticks",
         "",
-        "| tick | committed | cost $ | Brain calls | failed programs | service errors (timeouts) | refusals | minutes |",
-        "|---|---|---|---|---|---|---|---|",
+        (
+            "| tick | committed | cost $ | Brain calls | failed programs | service errors (timeouts) | refusals "
+            "| steers | minutes |"
+        ),
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for t in ticks:
         lines.append(
             f"| {t.stamp} | {'yes' if t.committed else 'no'} | {t.cost:.3f} | {t.calls} | {t.failed_programs} "
-            f"| {t.service_errors} ({t.timeouts}) | {t.refusals} | {t.minutes:.0f} |"
+            f"| {t.service_errors} ({t.timeouts}) | {t.refusals} | {t.steers} | {t.minutes:.0f} |"
         )
     if ticks:
         total = sum((t.cost for t in ticks), Decimal(0))
@@ -119,7 +125,8 @@ def local_section(ticks: list[TickStats]) -> list[str]:
             f"**{len(ticks)} ticks**, {committed} committed ({committed / len(ticks):.0%}); "
             f"total ${total:.2f}, ${total / len(ticks):.3f}/tick; "
             f"failed programs {sum(t.failed_programs for t in ticks) / calls:.0%} of calls; "
-            f"timeouts {sum(t.timeouts for t in ticks)}; refusals {sum(t.refusals for t in ticks)}.",
+            f"timeouts {sum(t.timeouts for t in ticks)}; refusals {sum(t.refusals for t in ticks)}; "
+            f"judge steers {sum(t.steers for t in ticks)}.",
         ]
     return lines
 

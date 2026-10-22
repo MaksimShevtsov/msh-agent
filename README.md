@@ -25,6 +25,7 @@ The model sees only `brain_run(source)` and `brain_start(task)`.
 | `RepairToolArguments` | fixes malformed tool JSON from small models |
 | `PromptInjectionDefender` (pattern tier) | withholds Brain output with planted instructions (`ignore previous…`, fake `<system>` tags); logged as `injection`. The ML tier is off: it withheld 13 % of real outputs |
 | `ToolCallJudge` + `CommitEvidence` | loop only: a second model (`BRAIN_COMMIT_JUDGE_MODEL`) reviews each commit against the server's diff; uncertain = blocked |
+| `TrajectoryJudge` | loop only: `BRAIN_TRAJECTORY_JUDGE_MODEL` reviews the last ~20k tokens every 6 requests, in the background, and steers off re-polling, repeated failures, budget drift and contradicted claims; logged as `review` (scorecard "steers"). An unavailable judge falls back to all-good (`review_unavailable`) instead of failing the tick |
 
 `policy.py` always refuses workspace-level verbs, `artifacts.revoke` and `getattr`;
 `commit`/`publish` and sandbox calls only run when enabled in `.env`. Commits go

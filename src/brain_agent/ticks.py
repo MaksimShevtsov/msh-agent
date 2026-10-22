@@ -58,6 +58,13 @@ async def run_tick(
         advisor_model=settings.advisor_model if advisor_model is None else (advisor_model or None),
     )
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
+    log_path = settings.state_dir / "runs" / f"{stamp}.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def append(entry: dict) -> None:
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"t": time.time(), **entry}, ensure_ascii=False) + "\n")
+
     agent = build_agent(
         settings.model,
         agent_name=settings.agent_name,
@@ -66,17 +73,16 @@ async def run_tick(
         run_budget_usd=settings.run_budget_usd,
         advisor_model=settings.advisor_model,
         commit_judge_model=settings.commit_judge_model,
+        trajectory_judge_model=settings.trajectory_judge_model,
+        review_log=append,
     )
     async with BrainClient(settings.agent_key, os.environ.get("BRAIN_URL", DEFAULT_BASE_URL)) as client:
         session, start = await client.start(task)
         role, author = start.data.get("role"), start.data.get("author")
         if session is None:
             raise TickStartError(start.output)
-        log_path = settings.state_dir / "runs" / f"{stamp}.jsonl"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as fh:  # the start text is part of what the agent saw
-            fh.write(json.dumps({"t": time.time(), "kind": "start", "session": session.handle, "task": task,
-                                 "output": start.output}, ensure_ascii=False) + "\n")
+        # the start text is part of what the agent saw
+        append({"kind": "start", "session": session.handle, "task": task, "output": start.output})
         deps = settings.deps(client, session=session, log_path=log_path)
         deps.max_calls = max_calls
         prompt = (

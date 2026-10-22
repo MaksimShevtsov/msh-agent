@@ -477,6 +477,59 @@ async def test_planted_instructions_in_workspace_output_are_withheld(tmp_path: P
     assert detection["source"] == sources[0] and detection["risk"] == "high"
 
 
+def _reviewed_agent(tmp_path: Path, judge, entries: list[dict]):
+    return build_agent(
+        "test", agent_name="t", state_dir=tmp_path, policy=Policy(), run_budget_usd=Decimal("1"),
+        trajectory_judge_model=FunctionModel(judge), trajectory_every=2, review_log=entries.append,
+    )
+
+
+def _polling_model(seen: list[str]):
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if "judge_feedback" in str(messages[-1]) or len(messages) > 40:
+            seen.append(str(messages[-1]))
+            return ModelResponse(
+                parts=[ToolCallPart("final_result", {"summary": "s", "committed": False, "next_step": "n"})]
+            )
+        return ModelResponse(parts=[ToolCallPart("brain_run", {"source": "print(brain.sandbox.status('j1'))"})])
+
+    return model
+
+
+async def test_trajectory_judge_steers_a_polling_tick(tmp_path: Path):
+    entries: list[dict] = []
+    seen: list[str] = []
+
+    def judge(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        assert "print(brain.sandbox.status('j1'))" in messages[0].parts[-1].content
+        return ModelResponse(parts=[ToolCallPart("final_result_Steer", {"message": "Stop polling j1; watch it."})])
+
+    agent = _reviewed_agent(tmp_path, judge, entries)
+    async with BrainClient("agt-x", server=FakeBrainServer()) as client:
+        await agent.run("go", deps=make_deps(client, Policy(), tmp_path), model=FunctionModel(_polling_model(seen)))
+    assert "Stop polling j1" in seen[0]
+    assert {"kind": "review", "verdict": "steer", "message": "Stop polling j1; watch it."} in entries
+
+
+async def test_an_unavailable_trajectory_judge_never_stops_the_tick(tmp_path: Path):
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    entries: list[dict] = []
+    seen: list[str] = []
+
+    def judge(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        raise ModelHTTPError(429, "glm-5.3", "rate limited")
+
+    agent = _reviewed_agent(tmp_path, judge, entries)
+    async with BrainClient("agt-x", server=FakeBrainServer()) as client:
+        result = await agent.run(
+            "go", deps=make_deps(client, Policy(), tmp_path), model=FunctionModel(_polling_model(seen))
+        )
+    assert result.output.summary == "s" and "judge_feedback" not in seen[0]
+    assert {"kind": "review_unavailable"} in entries
+    assert {"kind": "review", "verdict": "ok"} in entries
+
+
 def test_agenda_keeps_own_jobs_and_fires_once_when_a_job_leaves_the_queue(tmp_path: Path):
     agenda = Agenda(tmp_path / "agenda.json")
     agenda.replace([Watch(ref="jaaaaaaaa1", action="readout"), Watch(ref="d3066", action="re-read")], {"jbbbbbbbb2"})
