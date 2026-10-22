@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28",
     "pydantic-ai-slim[anthropic,openai,mcp,ag-ui]>=2.59,<2.60",
-    "pydantic-ai-harness>=0.59,<0.60",
+    "pydantic-ai-harness[prompt-injection-defender]>=0.59,<0.60",
     "python-dotenv>=1.0",
     "uvicorn>=0.30",
     "logfire[starlette]>=4.0",

@@ -23,6 +23,7 @@ The model sees only `brain_run(source)` and `brain_start(task)`.
 | `ToolOutputLimits` | spills big Brain outputs to `state/overflow` |
 | `SummarizingCompaction` | compacts history at 60 % of the model's window |
 | `RepairToolArguments` | fixes malformed tool JSON from small models |
+| `PromptInjectionDefender` (pattern tier) | withholds Brain output with planted instructions (`ignore previous…`, fake `<system>` tags); logged as `injection`. The ML tier is off: it withheld 13 % of real outputs |
 | `ToolCallJudge` + `CommitEvidence` | loop only: a second model (`BRAIN_COMMIT_JUDGE_MODEL`) reviews each commit against the server's diff; uncertain = blocked |
 
 `policy.py` always refuses workspace-level verbs, `artifacts.revoke` and `getattr`;
