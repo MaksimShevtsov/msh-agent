@@ -75,6 +75,8 @@ async def run_tick(
         commit_judge_model=settings.commit_judge_model,
         trajectory_judge_model=settings.trajectory_judge_model,
         review_log=append,
+        history_db=settings.state_dir / "ticks.sqlite3",
+        history_run=f"tick-{stamp}",
     )
     async with BrainClient(settings.agent_key, os.environ.get("BRAIN_URL", DEFAULT_BASE_URL)) as client:
         session, start = await client.start(task)

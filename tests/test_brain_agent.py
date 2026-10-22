@@ -573,6 +573,33 @@ async def test_commit_checklist_is_repeated_only_when_commits_are_enabled(tmp_pa
             assert "sign new text as `t`" in seen[7]
 
 
+async def test_a_tick_finds_the_exact_program_an_earlier_tick_ran(tmp_path: Path):
+    edit = "src.replace('ZEBRA_HINT', 'CLARIF must carry every candidate SKU')"
+    found: list[str] = []
+
+    def first(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("brain_run", {"source": f"print({edit})"})])
+        return ModelResponse(parts=[ToolCallPart("final_result", {"summary": "s", "committed": False, "next_step": "n"})])
+
+    def second(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) == 1:
+            assert "search_conversation_history" in [t.name for t in info.function_tools]
+            return ModelResponse(parts=[ToolCallPart("search_conversation_history", {"query": "ZEBRA_HINT"})])
+        found.append(messages[-1].parts[0].content)
+        return ModelResponse(parts=[ToolCallPart("final_result", {"summary": "s", "committed": False, "next_step": "n"})])
+
+    async with BrainClient("agt-x", server=FakeBrainServer()) as client:
+        for stamp, model in (("T1", first), ("T2", second)):
+            agent = build_agent(
+                "test", agent_name="t", state_dir=tmp_path, policy=Policy(), run_budget_usd=Decimal("1"),
+                history_db=tmp_path / "ticks.sqlite3", history_run=f"tick-{stamp}",
+            )
+            await agent.run("go", deps=make_deps(client, Policy(), tmp_path), model=FunctionModel(model))
+
+    assert "CLARIF must carry every candidate SKU" in found[0] and "tick-T1" in found[0]
+
+
 def test_agenda_keeps_own_jobs_and_fires_once_when_a_job_leaves_the_queue(tmp_path: Path):
     agenda = Agenda(tmp_path / "agenda.json")
     agenda.replace([Watch(ref="jaaaaaaaa1", action="readout"), Watch(ref="d3066", action="re-read")], {"jbbbbbbbb2"})

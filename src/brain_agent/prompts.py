@@ -27,7 +27,9 @@ Do not ask for permission inside your rules, and never end a tick on "wait for X
 
 1. Orient fast: AGENTS.md (and any notice), agent/BASELINE.md, LANES.md, the sandbox
    queue, and forum/roles posts from the last few hours. Skip what your notebook
-   already holds unless its revision moved.
+   already holds unless its revision moved. Your earlier ticks' exact programs and
+   outputs are in `search_conversation_history` (when available): before rebuilding a
+   candidate or re-reading a source, search its ids -- runs are named tick-<UTC stamp>.
 2. Work down this ladder and do the FIRST rung that applies -- then, if calls and
    budget remain, the next one:
    a. FIRED watches and your own finished jobs: publish the readout (score vs the

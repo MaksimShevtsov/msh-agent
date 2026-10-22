@@ -27,11 +27,16 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai_harness.advisor import Advisor
 from pydantic_ai_harness.compaction import SummarizingCompaction
+from pydantic_ai_harness.conversation_search import (
+    ConversationSearch,
+    SnapshotHistorySource,
+)
 from pydantic_ai_harness.memory import Memory, SqliteMemoryStore
 from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.prompt_injection_defender import PromptInjectionDefender
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 from pydantic_ai_harness.spend import Budget, SpendLimits
+from pydantic_ai_harness.step_persistence import SqliteStepStore, StepPersistence
 from pydantic_ai_harness.system_reminders import Reminder, SystemReminders
 from pydantic_ai_harness.tool_call_judge import ToolCallJudge
 from pydantic_ai_harness.tool_output_limits import LocalFileStore, ToolOutputLimits
@@ -381,6 +386,8 @@ def build_agent(
     trajectory_judge_model: str | Model | None = None,
     trajectory_every: int = 6,
     review_log: Callable[[dict], None] = lambda entry: None,
+    history_db: Path | None = None,
+    history_run: str | None = None,
 ) -> Agent[BrainDeps, TickReport]:
     # Hybrid: a cheap executor does the reading; a stronger advisor weighs in at the two
     # decisions that matter. Local mode with a resolved Model keeps zai on its coding
@@ -404,6 +411,20 @@ def build_agent(
         if commit_judge_model and policy.allow_commit
         else []
     )
+    # Loop only: every tick's transcript, searchable by later ticks. The notebook keeps
+    # conclusions; this keeps the exact programs and outputs (the 20:20 tick rebuilt a rider
+    # whose edits the lost 20:06 tick had already run). Not for resuming: a failed tick's
+    # Brain session is discarded, so its history points at a draft that no longer exists.
+    history = []
+    if history_db is not None:
+        # The last complete snapshot is the whole tick; older ones only matter after a
+        # compaction, which ticks rarely reach.
+        store = SqliteStepStore(database=history_db, max_snapshots_per_run=3)
+        history = [
+            StepPersistence(store=store, run_id=history_run),
+            # One writer (the loop) and one principal: search every tick, not one conversation.
+            ConversationSearch(SnapshotHistorySource(store), scope="all", max_matches=6),
+        ]
     agent = Agent(
         resolve_model(model) if isinstance(model, str) else model,
         deps_type=BrainDeps,
@@ -440,9 +461,11 @@ def build_agent(
             # Brain outputs, while the ML tier withheld 13 % of them (AGENTS.md, BASELINE, our
             # own diffs), so it would blind the agent. Polite, domain-shaped injections pass
             # this filter; the commit judge is the backstop for what they could make us publish.
+            *history,
             PromptInjectionDefender(
                 block_high_risk=True,
-                tool_filter=["brain_run", "brain_start"],
+                # Search excerpts replay workspace text from earlier ticks.
+                tool_filter=["brain_run", "brain_start", "search_conversation_history"],
                 on_detection=_log_injection,
                 blocked_message=INJECTION_BLOCKED,
             ),

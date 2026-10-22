@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import sqlite3
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -150,12 +151,17 @@ def eval_task(
     settings: Settings, variant: str, model: str, advisor: str, extra: str | None, eval_dir: Path
 ):
     async def task(focus: str) -> TickOutput:
-        # Each case runs from a copy of the real notebook, in its own state dir.
+        # Each case runs from a copy of the real notebook and tick history, in its own state dir.
         state = eval_dir / variant / datetime.now(UTC).strftime("%H%M%S%f")
         state.mkdir(parents=True)
         notebook = settings.state_dir / "memory.sqlite3"
         if notebook.exists():
             shutil.copy2(notebook, state / "memory.sqlite3")
+        ticks = settings.state_dir / "ticks.sqlite3"
+        if ticks.exists():
+            # The loop may be writing it: copy through SQLite, not the file system.
+            with sqlite3.connect(ticks) as src, sqlite3.connect(state / "ticks.sqlite3") as dst:
+                src.backup(dst)
         case_settings = replace(settings, state_dir=state)
         tick = await run_tick(
             case_settings,
