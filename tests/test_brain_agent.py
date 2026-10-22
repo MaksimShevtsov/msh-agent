@@ -8,6 +8,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from brain_agent.agent import BrainDeps, build_agent
 from brain_agent.approvals import APPROVAL_TOOL, Approvals
 from brain_agent.client import BrainClient, Session
+from brain_agent.loop_status import loop_status
 from brain_agent.policy import Policy, check_source
 from brain_agent.sandbox_guard import JobLedger, SandboxRules, SubmitPlan, check_cancel, check_queue, plan_submit
 
@@ -196,6 +197,34 @@ async def test_chat_commit_runs_once_after_the_operator_approves(tmp_path: Path)
     sent = [args["source"] for name, args in server.calls if name == "brain_run"]
     assert sent == [commit]  # executed once; the session closed, so no replay reached the server
     assert key in approvals.spent
+
+
+def test_loop_status_reports_a_running_tick_and_the_last_report(tmp_path: Path):
+    import os
+
+    (tmp_path / "reports").mkdir()
+    (tmp_path / "runs").mkdir()
+    report = tmp_path / "reports" / "2026-10-22T100000Z.json"
+    report.write_text(json.dumps({"summary": "reviewed d3054", "committed": True, "next_step": "check smoke"}))
+    os.utime(report, (1_000, 1_000))
+    log = tmp_path / "runs" / "2026-10-22T120000Z.jsonl"
+    log.write_text(
+        "\n".join(
+            json.dumps(e)
+            for e in [
+                {"t": 2_000, "kind": "run", "code": 0, "source": "print(brain.read('d1'))\nmore"},
+                {"t": 2_010, "kind": "error", "source": "print(brain.search('w1', 'x'))", "error": "4-second limit"},
+            ]
+        )
+    )
+    JobLedger(tmp_path / "jobs.json").add([{"job": "jabc", "trials": 10, "session": "s9"}])
+
+    text = loop_status(tmp_path)
+    assert "IN PROGRESS" in text and "1 programs, 1 service errors" in text
+    assert "print(brain.read('d1'))" in text and "more" not in text  # first line only
+    assert "4-second limit" in text
+    assert "reviewed d3054" in text and "check smoke" in text
+    assert "jabc trials=10" in text
 
 
 def test_cancel_only_own_literal_jobs():

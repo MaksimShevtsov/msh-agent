@@ -27,6 +27,7 @@ from pydantic_ai_harness.tool_output_limits import LocalFileStore, ToolOutputLim
 
 from brain_agent.approvals import APPROVAL_TOOL, Approvals
 from brain_agent.client import BrainClient, BrainError, RunResult, Session
+from brain_agent.loop_status import loop_status as read_loop_status
 from brain_agent.models import resolve_model
 from brain_agent.policy import Policy, check_source, closes_session
 from brain_agent.prompts import render_instructions
@@ -118,6 +119,7 @@ def build_agent(
     state_dir: Path,
     policy: Policy,
     run_budget_usd: Decimal,
+    with_loop_status: bool = False,
 ) -> Agent[BrainDeps, TickReport]:
     agent = Agent(
         resolve_model(model) if isinstance(model, str) else model,
@@ -222,5 +224,14 @@ def build_agent(
         deps.session = session
         _log(deps, "start", session=session and session.handle, task=task, role=result.data.get("role"))
         return format_result(result)
+
+    if with_loop_status:
+
+        @agent.tool_plain
+        def loop_status() -> str:
+            """Status of the scheduled 3-hour loop on this machine: whether a tick is running now,
+            its latest programs and errors, the last finished tick's report, and your sandbox job ledger.
+            Read-only; local state only (use brain_run for the workspace itself)."""
+            return read_loop_status(state_dir)
 
     return agent
