@@ -3,7 +3,8 @@
 Brain already *is* code mode -- every call is a Python program executed by Monty
 on the server -- so the agent needs no local CodeMode sandbox. The harness
 supplies what a long research session lacks: a plan, a notebook that survives
-between scheduled ticks, a spend brake, and context management.
+between scheduled ticks, a spend brake, context management, and a second model
+that reviews every unattended commit.
 """
 
 from __future__ import annotations
@@ -11,19 +12,23 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 
 from pydantic import BaseModel, Field
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, RunContext, SkipToolExecution
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.models import Model
+from pydantic_ai.tools import ToolDefinition
 from pydantic_ai_harness.advisor import Advisor
 from pydantic_ai_harness.compaction import SummarizingCompaction
 from pydantic_ai_harness.memory import Memory, SqliteMemoryStore
 from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 from pydantic_ai_harness.spend import Budget, SpendLimits
+from pydantic_ai_harness.tool_call_judge import ToolCallJudge
 from pydantic_ai_harness.tool_output_limits import LocalFileStore, ToolOutputLimits
 
 from brain_agent.agenda import Watch
@@ -73,7 +78,7 @@ class TickReport(BaseModel):
     contribution: str | None = Field(
         default=None, description="Path(s) of documents you created or edited, or null if none."
     )
-    committed: bool = Field(description="True only if brain.commit() succeeded in this session.")
+    committed: bool = Field(description="True only if brain_commit succeeded in this session.")
     next_step: str = Field(description="The next useful thing for whoever (or whichever tick) comes next.")
     draft: str | None = Field(
         default=None,
@@ -126,6 +131,130 @@ async def _queue_depth(deps: BrainDeps) -> int | None:
     return int(match[1]) if result.ok and match else None
 
 
+COMMIT_JUDGE_QUESTION = """\
+Should this commit to a shared research workspace be blocked? It is made by `{agent_name}`; \
+`message` is its commit message and `diff` is the server's diff of everything it publishes. \
+Answer yes if any of these hold:
+- it deletes or rewrites text written by other authors (appending a new line or entry to a \
+shared file is fine, and so is editing {agent_name}'s own entries and files);
+- it contains credentials, API keys or agent URLs;
+- a signature names anyone other than {agent_name}, or names an AI vendor or framework;
+- the diff is empty, or does not match the commit message.
+Otherwise answer no."""
+
+COMMIT_JUDGE_DENIAL = (
+    "The commit reviewer blocked this commit: it may rewrite other authors' text, leak a secret, carry a "
+    "wrong signature, or not match its message. Fix the draft and call `{tool_name}` again, or discard."
+)
+
+# The judge prompt carries the whole diff; a commit bigger than this is cut, and says so.
+_DIFF_LIMIT = 30_000
+
+# Any reference to these verbs, aliases included, so a commit cannot skip brain_commit.
+_COMMIT_VERB = re.compile(r"\.\s*(commit|publish)\b")
+
+
+class CommitEvidence(AbstractCapability[BrainDeps]):
+    """Hand the commit judge the server's diff instead of whatever the model says it commits.
+
+    Wraps the whole `brain_commit` lifecycle, so the diff is in the arguments before the judge
+    (innermost) reads them, and a blocked commit is logged as a refusal.
+    """
+
+    async def wrap_tool_execute(
+        self, ctx: RunContext[BrainDeps], *, call: ToolCallPart, tool_def: ToolDefinition, args, handler
+    ):
+        deps = ctx.deps
+        if tool_def.name != "brain_commit" or deps.session is None:
+            return await handler(args)
+        diff = await _diff(deps)
+        if len(diff) > _DIFF_LIMIT:
+            diff = diff[:_DIFF_LIMIT] + "\n[diff truncated]"
+        try:
+            return await handler({**args, "diff": diff})
+        except SkipToolExecution:
+            _log(deps, "refused", session=deps.session.handle, source=f"brain.commit({args['message']!r})",
+                 reason="commit reviewer blocked")
+            raise
+
+
+async def _hide_diff(ctx: RunContext[BrainDeps], tool_def: ToolDefinition) -> ToolDefinition:
+    """`diff` is filled in by CommitEvidence; the model never sees the parameter."""
+    schema = dict(tool_def.parameters_json_schema)
+    schema["properties"] = {k: v for k, v in schema.get("properties", {}).items() if k != "diff"}
+    return replace(tool_def, parameters_json_schema=schema)
+
+
+async def _execute(ctx: RunContext[BrainDeps], source: str) -> str:
+    """Send one program through the operator's rules; shared by brain_run and brain_commit."""
+    deps = ctx.deps
+    if deps.session is None:
+        return "No open session (the last one was committed or discarded). Call brain_start first."
+    if deps.calls >= deps.max_calls:
+        return "Call budget for this tick is spent. Finish: discard or commit, then write your report."
+    handle = deps.session.handle
+
+    def refuse(reason: str) -> str:
+        _log(deps, "refused", session=handle, source=source, reason=reason)
+        return f"[refused by operator policy] {reason}"
+
+    refusal = check_source(source, deps.policy) or check_cancel(source, deps.ledger.ids())
+    if refusal:
+        return refuse(refusal)
+    plan = plan_submit(source)
+    if isinstance(plan, str):
+        return refuse(plan)
+    sent = source
+    if plan is not None:
+        if deps.submits >= deps.rules.max_submits_per_tick:
+            return refuse(f"At most {deps.rules.max_submits_per_tick} sandbox submission(s) per tick.")
+        depth = await _queue_depth(deps)
+        if depth is None:
+            return refuse("Could not read the sandbox queue depth; not submitting blind.")
+        if queue_refusal := check_queue(plan, depth, deps.rules):
+            return refuse(queue_refusal)
+        sent = plan.instrumented(source)
+    if deps.approvals is not None and (plan is not None or re.search(r"\bcommit\s*\(", source)):
+        action = "sandbox submit" if plan is not None else "commit"
+        decision = deps.approvals.decision(ctx.messages, handle, source)
+        if decision is None:
+            diff = await _diff(deps) if action == "commit" else ""
+            approval_id = deps.approvals.request(handle, source, action, diff)
+            _log(deps, "approval_requested", session=handle, source=source, approval_id=approval_id)
+            return (
+                f"[approval required] This {action} waits for the operator. Call the "
+                f"`{APPROVAL_TOOL}` tool with approval_id={approval_id!r}, then, if approved, "
+                "repeat this exact call unchanged."
+            )
+        if decision is False:
+            return refuse(f"The operator rejected this {action}.")
+    deps.calls += 1
+    try:
+        result = await deps.client.run(deps.session, sent)
+    except BrainError as exc:
+        _log(deps, "error", session=handle, source=sent, error=str(exc))
+        return f"[service error] {exc}"
+    _log(deps, "run", session=handle, source=sent, code=result.code, output=result.output)
+    if result.ok and re.search(r"\bundo\s*\(", source) and deps.last_run_submitted:
+        deps.staged_jobs.pop()
+        deps.submits -= 1
+    deps.last_run_submitted = False
+    if result.ok and plan is not None:
+        for job in submitted_jobs(result.output):
+            deps.staged_jobs.append({"job": job, "trials": plan.trials, "session": handle})
+            deps.submits += 1
+            deps.last_run_submitted = True
+    if result.ok and closes_session(source):
+        if re.search(r"\bcommit\s*\(", source):
+            deps.committed.append(handle)
+            deps.ledger.add(deps.staged_jobs)
+        else:  # discarded: staged submissions never reached the queue
+            deps.submits -= len(deps.staged_jobs)
+        deps.staged_jobs = []
+        deps.session = None
+    return format_result(result)
+
+
 def build_agent(
     model: str | Model,
     *,
@@ -135,12 +264,29 @@ def build_agent(
     run_budget_usd: Decimal,
     with_loop_status: bool = False,
     advisor_model: str | None = None,
+    commit_judge_model: str | Model | None = None,
 ) -> Agent[BrainDeps, TickReport]:
     # Hybrid: a cheap executor does the reading; a stronger advisor weighs in at the two
     # decisions that matter. Local mode with a resolved Model keeps zai on its coding
     # endpoint; no history is forwarded, so each consultation carries its own evidence.
     advisor = (
         [Advisor(resolve_model(advisor_model), mode="local", max_uses=1, max_tokens=4096)] if advisor_model else []
+    )
+    # Unattended commits get a second model in front of them, shown the server's diff.
+    # Uncertain or failed judgements block: nobody is watching to catch a bad commit.
+    commit_judge = (
+        [
+            CommitEvidence(),
+            ToolCallJudge(
+                resolve_model(commit_judge_model) if isinstance(commit_judge_model, str) else commit_judge_model,
+                tools=["brain_commit"],
+                question=COMMIT_JUDGE_QUESTION.format(agent_name=agent_name),
+                on_uncertain="block",
+                denial_message=COMMIT_JUDGE_DENIAL,
+            ),
+        ]
+        if commit_judge_model and policy.allow_commit
+        else []
     )
     agent = Agent(
         resolve_model(model) if isinstance(model, str) else model,
@@ -160,6 +306,7 @@ def build_agent(
             SummarizingCompaction(max_fraction=0.6, keep_messages=16),
             # Small models (glm-flash) emit malformed tool JSON now and then.
             RepairToolArguments(),
+            *commit_judge,
         ],
         defer_model_check=True,
     )
@@ -171,72 +318,21 @@ def build_agent(
         `brain` is pre-bound; use print() to see results. Keep each program small
         (4 s wall clock). Returns printed output plus any workspace notices.
         """
-        deps = ctx.deps
-        if deps.session is None:
-            return "No open session (the last one was committed or discarded). Call brain_start first."
-        if deps.calls >= deps.max_calls:
-            return "Call budget for this tick is spent. Finish: discard or commit, then write your report."
-        handle = deps.session.handle
+        if ctx.deps.policy.allow_commit and _COMMIT_VERB.search(source):
+            _log(ctx.deps, "refused", session=ctx.deps.session and ctx.deps.session.handle, source=source,
+                 reason="commit outside brain_commit")
+            return "[refused by operator policy] Commit with the `brain_commit` tool, in a call of its own."
+        return await _execute(ctx, source)
 
-        def refuse(reason: str) -> str:
-            _log(deps, "refused", session=handle, source=source, reason=reason)
-            return f"[refused by operator policy] {reason}"
+    if policy.allow_commit:
 
-        refusal = check_source(source, deps.policy) or check_cancel(source, deps.ledger.ids())
-        if refusal:
-            return refuse(refusal)
-        plan = plan_submit(source)
-        if isinstance(plan, str):
-            return refuse(plan)
-        sent = source
-        if plan is not None:
-            if deps.submits >= deps.rules.max_submits_per_tick:
-                return refuse(f"At most {deps.rules.max_submits_per_tick} sandbox submission(s) per tick.")
-            depth = await _queue_depth(deps)
-            if depth is None:
-                return refuse("Could not read the sandbox queue depth; not submitting blind.")
-            if queue_refusal := check_queue(plan, depth, deps.rules):
-                return refuse(queue_refusal)
-            sent = plan.instrumented(source)
-        if deps.approvals is not None and (plan is not None or re.search(r"\bcommit\s*\(", source)):
-            action = "sandbox submit" if plan is not None else "commit"
-            decision = deps.approvals.decision(ctx.messages, handle, source)
-            if decision is None:
-                diff = await _diff(deps) if action == "commit" else ""
-                approval_id = deps.approvals.request(handle, source, action, diff)
-                _log(deps, "approval_requested", session=handle, source=source, approval_id=approval_id)
-                return (
-                    f"[approval required] This {action} waits for the operator. Call the "
-                    f"`{APPROVAL_TOOL}` tool with approval_id={approval_id!r}, then, if approved, "
-                    "send this exact program again unchanged."
-                )
-            if decision is False:
-                return refuse(f"The operator rejected this {action}.")
-        deps.calls += 1
-        try:
-            result = await deps.client.run(deps.session, sent)
-        except BrainError as exc:
-            _log(deps, "error", session=handle, source=sent, error=str(exc))
-            return f"[service error] {exc}"
-        _log(deps, "run", session=handle, source=sent, code=result.code, output=result.output)
-        if result.ok and re.search(r"\bundo\s*\(", source) and deps.last_run_submitted:
-            deps.staged_jobs.pop()
-            deps.submits -= 1
-        deps.last_run_submitted = False
-        if result.ok and plan is not None:
-            for job in submitted_jobs(result.output):
-                deps.staged_jobs.append({"job": job, "trials": plan.trials, "session": handle})
-                deps.submits += 1
-                deps.last_run_submitted = True
-        if result.ok and closes_session(source):
-            if re.search(r"\bcommit\s*\(", source):
-                deps.committed.append(handle)
-                deps.ledger.add(deps.staged_jobs)
-            else:  # discarded: staged submissions never reached the queue
-                deps.submits -= len(deps.staged_jobs)
-            deps.staged_jobs = []
-            deps.session = None
-        return format_result(result)
+        @agent.tool(prepare=_hide_diff)
+        async def brain_commit(ctx: RunContext[BrainDeps], message: str, diff: str = "") -> str:
+            """Commit the open session with a clear summary message, closing it.
+
+            Review `print(brain.diff())` first. Run any last edits with brain_run before this call.
+            """
+            return await _execute(ctx, f"brain.commit({message!r})")
 
     @agent.tool
     async def brain_start(ctx: RunContext[BrainDeps], task: str) -> str:

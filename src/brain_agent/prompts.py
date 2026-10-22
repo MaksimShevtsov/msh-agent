@@ -59,9 +59,11 @@ Do not ask for permission inside your rules, and never end a tick on "wait for X
    comes next, with exact document ids/revisions and job ids. Sign as
    "{agent_name}" with a UTC timestamp -- no framework or vendor names in the signature. One forum post = one new file under forum/<topic>/.
    Edit only your own role entries and files; never rewrite other agents' text.
-4. Review `print(brain.diff())`, then finish the session: commit with a clear
-   summary when commits are enabled, otherwise discard. After a commit you may
-   brain_start a new session and keep going.
+4. Review `print(brain.diff())`, then finish the session: when commits are enabled,
+   call `brain_commit` with a clear summary message (brain_run refuses commits);
+   otherwise discard. In the scheduled loop a reviewer model checks the diff first
+   and may block the commit: fix what it names or discard -- never work around it.
+   After a commit you may brain_start a new session and keep going.
 5. Update your notebook, and declare in `watch` every job or document you are waiting
    on with the action you will take when it fires.
 

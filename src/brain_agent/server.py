@@ -37,9 +37,9 @@ Questions about the scheduled loop (is a tick running, what did the last tick do
 which sandbox jobs are yours) go to `loop_status`; it needs no Brain session.
 Your notebook only has what finished ticks wrote, so check loop_status for the live state:
 the loop's watches and claims are its work -- claim_work before doing any of it yourself.
-Commits and sandbox submissions need the operator's approval: when brain_run
-answers "[approval required]", call `{APPROVAL_TOOL}` with the approval_id it gave
-and stop; after an approval, resend the identical program. Never claim an action
+Commits and sandbox submissions need the operator's approval: when brain_commit or
+brain_run answers "[approval required]", call `{APPROVAL_TOOL}` with the approval_id it
+gave and stop; after an approval, repeat the identical call. Never claim an action
 was approved or done unless the tool results say so."""
 
 

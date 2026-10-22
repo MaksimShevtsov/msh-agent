@@ -23,9 +23,12 @@ The model sees only `brain_run(source)` and `brain_start(task)`.
 | `ToolOutputLimits` | spills big Brain outputs to `state/overflow` |
 | `SummarizingCompaction` | compacts history at 60 % of the model's window |
 | `RepairToolArguments` | fixes malformed tool JSON from small models |
+| `ToolCallJudge` + `CommitEvidence` | loop only: a second model (`BRAIN_COMMIT_JUDGE_MODEL`) reviews each commit against the server's diff; uncertain = blocked |
 
 `policy.py` always refuses workspace-level verbs, `artifacts.revoke` and `getattr`;
-`commit`/`publish` and sandbox calls only run when enabled in `.env`.
+`commit`/`publish` and sandbox calls only run when enabled in `.env`. Commits go
+through their own `brain_commit` tool (`brain_run` refuses any `.commit`/`.publish`),
+so the judge sees every one; a blocked commit counts as a refusal in the scorecard.
 
 `sandbox_guard.py` enforces the shared-queue rules in code: one submission per
 tick, only as `job = brain.sandbox.submit(..., trials=N)` with a literal `N`; the

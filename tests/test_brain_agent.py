@@ -3,6 +3,7 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -59,6 +60,8 @@ class FakeBrainServer:
         source = args["source"]
         if source == "print(len(brain.sandbox.queue()))":
             output = str(self.queue_depth)
+        elif source == "print(brain.diff())":
+            output = "+ forum/x/2026-10-22-t-note.md (new, signed t)"
         elif "SUBMITTED_JOB" in source:
             output = "SUBMITTED_JOB jabc123"
         else:
@@ -164,7 +167,7 @@ async def test_chat_commit_waits_for_approval(tmp_path: Path):
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if len(messages) == 1:
-            return ModelResponse(parts=[ToolCallPart("brain_run", {"source": "brain.commit('x')"})])
+            return ModelResponse(parts=[ToolCallPart("brain_commit", {"message": "x"})])
         replies.append(messages[-1].parts[0].content)
         return ModelResponse(
             parts=[ToolCallPart("final_result", {"summary": "s", "committed": False, "next_step": "n"})]
@@ -200,7 +203,7 @@ async def test_chat_commit_runs_once_after_the_operator_approves(tmp_path: Path)
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         step["n"] += 1
         if step["n"] <= 2:  # resend after approval, then try to replay the spent approval
-            return ModelResponse(parts=[ToolCallPart("brain_run", {"source": commit})])
+            return ModelResponse(parts=[ToolCallPart("brain_commit", {"message": "x"})])
         return ModelResponse(
             parts=[ToolCallPart("final_result", {"summary": "s", "committed": True, "next_step": "n"})]
         )
@@ -346,13 +349,15 @@ def test_cancel_only_own_literal_jobs():
 async def test_submission_is_checked_recorded_on_commit_and_limited_per_tick(tmp_path: Path):
     step = {"n": 0}
     replies: list[str] = []
-    sources = [SUBMIT.format(n=100), SUBMIT.format(n=10), "brain.commit('run x')"]
+    sources = [SUBMIT.format(n=100), SUBMIT.format(n=10)]
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if step["n"]:
             replies.append(messages[-1].parts[0].content)
-        if step["n"] < len(sources) + 1:
+        if step["n"] < len(sources) + 2:
             step["n"] += 1
+            if step["n"] == 3:
+                return ModelResponse(parts=[ToolCallPart("brain_commit", {"message": "run x"})])
             if step["n"] == 4:  # a second submission in the same tick
                 return ModelResponse(parts=[ToolCallPart("brain_start", {"task": "t2"})])
             return ModelResponse(parts=[ToolCallPart("brain_run", {"source": sources[step["n"] - 1]})])
@@ -377,6 +382,72 @@ async def test_submission_is_checked_recorded_on_commit_and_limited_per_tick(tmp
     assert "At most 1 sandbox submission" in replies[-1]
     sent = [args["source"] for name, args in server.calls if name == "brain_run"]
     assert not any("trials=100" in s for s in sent)
+
+
+@pytest.mark.parametrize("answer", ["yes", "no"])
+async def test_loop_commit_is_judged_on_the_server_diff(tmp_path: Path, answer: str):
+    judged: list[str] = []
+    replies: list[str] = []
+
+    def judge(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        judged.append(messages[0].parts[-1].content)
+        return ModelResponse(parts=[ToolCallPart("final_result", {"response": answer})])
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        (commit_tool,) = [t for t in info.function_tools if t.name == "brain_commit"]
+        assert list(commit_tool.parameters_json_schema["properties"]) == ["message"]
+        if len(messages) == 1:
+            # the model's own `diff` is ignored: the judge sees the server's
+            return ModelResponse(parts=[ToolCallPart("brain_commit", {"message": "note", "diff": "nothing"})])
+        replies.append(messages[-1].parts[0].content)
+        return ModelResponse(
+            parts=[ToolCallPart("final_result", {"summary": "s", "committed": answer == "no", "next_step": "n"})]
+        )
+
+    server = FakeBrainServer()
+    policy = Policy(allow_commit=True)
+    agent = build_agent(
+        "test", agent_name="t", state_dir=tmp_path, policy=policy, run_budget_usd=Decimal("1"),
+        commit_judge_model=FunctionModel(judge),
+    )
+    async with BrainClient("agt-x", server=server) as client:
+        deps = make_deps(client, policy, tmp_path)
+        await agent.run("go", deps=deps, model=FunctionModel(model))
+
+    (prompt,) = judged
+    assert "forum/x/2026-10-22-t-note.md" in prompt and '"nothing"' not in prompt
+    sent = [args["source"] for name, args in server.calls if name == "brain_run"]
+    log = [json.loads(line) for line in deps.log_path.read_text(encoding="utf-8").splitlines()]
+    if answer == "yes":
+        assert sent == ["print(brain.diff())"]
+        assert "commit reviewer blocked" in replies[0]
+        assert deps.session is not None and not deps.committed
+        assert [e["kind"] for e in log] == ["refused"]
+    else:
+        assert sent == ["print(brain.diff())", "brain.commit('note')"]
+        assert deps.session is None and deps.committed == ["s1"]
+
+
+async def test_commits_go_through_brain_commit_when_enabled(tmp_path: Path):
+    replies: list[str] = []
+    sources = ["brain.commit('x')", "c = brain.commit\nc('x')"]
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if len(messages) > 1:
+            replies.append(messages[-1].parts[0].content)
+        if len(replies) < len(sources):
+            return ModelResponse(parts=[ToolCallPart("brain_run", {"source": sources[len(replies)]})])
+        return ModelResponse(
+            parts=[ToolCallPart("final_result", {"summary": "s", "committed": False, "next_step": "n"})]
+        )
+
+    server = FakeBrainServer()
+    policy = Policy(allow_commit=True)
+    agent = build_agent("test", agent_name="t", state_dir=tmp_path, policy=policy, run_budget_usd=Decimal("1"))
+    async with BrainClient("agt-x", server=server) as client:
+        await agent.run("go", deps=make_deps(client, policy, tmp_path), model=FunctionModel(model))
+    assert all("brain_commit" in r for r in replies) and len(replies) == 2
+    assert server.calls == []
 
 
 def test_agenda_keeps_own_jobs_and_fires_once_when_a_job_leaves_the_queue(tmp_path: Path):

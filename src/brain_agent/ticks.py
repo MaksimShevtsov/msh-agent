@@ -65,6 +65,7 @@ async def run_tick(
         policy=settings.policy,
         run_budget_usd=settings.run_budget_usd,
         advisor_model=settings.advisor_model,
+        commit_judge_model=settings.commit_judge_model,
     )
     async with BrainClient(settings.agent_key, os.environ.get("BRAIN_URL", DEFAULT_BASE_URL)) as client:
         session, start = await client.start(task)
