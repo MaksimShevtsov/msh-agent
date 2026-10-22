@@ -80,6 +80,7 @@ async def run_tick(
         deps.max_calls = max_calls
         prompt = (
             f"UTC now: {stamp}. You are connected as `{author}` (role `{role}`).\n"
+            f"Brain call budget for this tick: {max_calls} programs; the next tick comes soon.\n"
             f"Your sandbox jobs so far:\n{deps.ledger.summary()}\n\n"
             f"Your watches (FIRED ones come first on your ladder):\n{settings.agenda.render()}\n\n"
             f"Brain session start text:\n\n{start.output}\n\n"

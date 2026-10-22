@@ -80,7 +80,7 @@ def main() -> None:
         p.add_argument("--task", default="Contribute to the shared ECOM1 research")
         p.add_argument("--focus", default=None, help="operator hint for this tick")
         p.add_argument("--read-only", action="store_true", help="force commits and sandbox off")
-        p.add_argument("--max-calls", type=int, default=60)
+        p.add_argument("--max-calls", type=int, default=30)
         if name == "loop":
             p.add_argument("--hours", type=float, default=1.0, help="longest gap between ticks")
             p.add_argument("--poll-minutes", type=float, default=10.0, help="how often watched jobs are checked")
