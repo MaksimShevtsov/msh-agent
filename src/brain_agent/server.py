@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 
+import logfire
 from pydantic_ai.ui.ag_ui import AGUIAdapter
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -98,7 +99,7 @@ def create_app(settings: Settings | None = None) -> Starlette:
                     except Exception:
                         pass
 
-    return Starlette(
+    app = Starlette(
         routes=[
             Route("/", run, methods=["POST"]),
             Route("/approvals/{approval_id}", approval),
@@ -106,6 +107,8 @@ def create_app(settings: Settings | None = None) -> Starlette:
         ],
         lifespan=lifespan,
     )
+    logfire.instrument_starlette(app)
+    return app
 
 
 def serve(host: str, port: int) -> None:

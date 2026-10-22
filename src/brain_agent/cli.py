@@ -9,10 +9,13 @@ import os
 import sys
 from datetime import UTC, datetime
 
+import logfire
 from dotenv import load_dotenv
 
 from brain_agent.agent import build_agent
 from brain_agent.client import DEFAULT_BASE_URL, BrainClient
+from brain_agent.observability import configure as configure_observability
+from brain_agent.scorecard import scorecard
 from brain_agent.settings import ROOT, Settings
 
 
@@ -45,7 +48,8 @@ async def tick(args: argparse.Namespace) -> int:
             f"Operator focus for this tick: {args.focus or 'your judgement, per the workspace instructions'}"
         )
         try:
-            result = await agent.run(prompt, deps=deps)
+            with logfire.span("tick {stamp}", stamp=stamp, session=session.handle, focus=args.focus):
+                result = await agent.run(prompt, deps=deps)
         finally:
             if deps.session is not None:
                 # Never leave a dangling draft session behind on the shared server.
@@ -57,6 +61,18 @@ async def tick(args: argparse.Namespace) -> int:
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+async def run_scorecard(args: argparse.Namespace) -> int:
+    settings = Settings.from_env()
+    if args.offline or not settings.agent_key:
+        text = await scorecard(settings.state_dir, None)
+    else:
+        async with BrainClient(settings.agent_key, os.environ.get("BRAIN_URL", DEFAULT_BASE_URL)) as client:
+            text = await scorecard(settings.state_dir, client)
+    (settings.state_dir / "scorecard.md").write_text(text, encoding="utf-8")
+    print(text)
     return 0
 
 
@@ -83,13 +99,18 @@ def main() -> None:
         p.add_argument("--max-calls", type=int, default=60)
         if name == "loop":
             p.add_argument("--hours", type=float, default=3.0)
+    p = sub.add_parser("scorecard", help="summarize ticks and check published work in Brain")
+    p.add_argument("--offline", action="store_true", help="local logs only, no Brain session")
     p = sub.add_parser("serve", help="AG-UI server for the CopilotKit chat")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
+    configure_observability(f"msh-agent-{'chat' if args.command == 'serve' else 'loop'}")
     if args.command == "serve":
         from brain_agent.server import serve
 
         serve(args.host, args.port)
         return
+    if args.command == "scorecard":
+        sys.exit(asyncio.run(run_scorecard(args)))
     sys.exit(asyncio.run(loop(args) if args.command == "loop" else tick(args)))

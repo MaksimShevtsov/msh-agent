@@ -9,6 +9,7 @@ from brain_agent.agent import BrainDeps, build_agent
 from brain_agent.approvals import APPROVAL_TOOL, Approvals
 from brain_agent.client import BrainClient, Session
 from brain_agent.loop_status import loop_status
+from brain_agent.scorecard import collect_ticks, published_paths
 from brain_agent.policy import Policy, check_source
 from brain_agent.sandbox_guard import JobLedger, SandboxRules, SubmitPlan, check_cancel, check_queue, plan_submit
 
@@ -225,6 +226,53 @@ def test_loop_status_reports_a_running_tick_and_the_last_report(tmp_path: Path):
     assert "4-second limit" in text
     assert "reviewed d3054" in text and "check smoke" in text
     assert "jabc trials=10" in text
+
+
+def test_scorecard_counts_ticks_and_finds_what_was_published(tmp_path: Path):
+    (tmp_path / "reports").mkdir()
+    (tmp_path / "runs").mkdir()
+    (tmp_path / "chat").mkdir()
+    (tmp_path / "reports" / "T1.json").write_text(
+        json.dumps(
+            {
+                "stamp": "T1",
+                "committed": True,
+                "calls": 4,
+                "usage": "RunUsage(cost=Decimal('0.125'), requests=3)",
+                "contribution": "experiments/x/reviews/r.md (d3138r1); roles/review.md entry",
+                "next_step": "check jcb45f1aa9c0743ea843416f1f01e46c9",
+            }
+        )
+    )
+    (tmp_path / "runs" / "T1.jsonl").write_text(
+        "\n".join(
+            json.dumps(e)
+            for e in [
+                {"t": 0, "kind": "run", "code": 0, "session": "s1", "source": "print(1)"},
+                {"t": 60, "kind": "run", "code": 2, "session": "s1", "source": "1/0"},
+                {"t": 90, "kind": "error", "session": "s1", "error": "exceeded the 4-second wall-clock limit"},
+                {"t": 120, "kind": "refused", "session": "s1", "source": "brain.delete_workspace('w1')"},
+            ]
+        )
+    )
+    # A chat session that created a findings note and committed; another that never committed.
+    (tmp_path / "chat" / "c.jsonl").write_text(
+        "\n".join(
+            json.dumps(e)
+            for e in [
+                {"kind": "run", "code": 0, "session": "s7", "source": 'brain.create("w1", "findings/n.md", t)'},
+                {"kind": "run", "code": 0, "session": "s7", "source": 'brain.commit("note")'},
+                {"kind": "run", "code": 0, "session": "s8", "source": 'brain.create("w1", "forum/x/draft.md", t)'},
+            ]
+        )
+    )
+
+    (tick,) = collect_ticks(tmp_path)
+    assert (tick.cost, tick.calls, tick.failed_programs, tick.service_errors, tick.timeouts, tick.refusals) == (
+        Decimal("0.125"), 4, 1, 1, 1, 1,
+    )
+    assert tick.minutes == 2 and tick.jobs == ["jcb45f1aa9c0743ea843416f1f01e46c9"]
+    assert published_paths(tmp_path) == ["experiments/x/reviews/r.md", "findings/n.md"]
 
 
 def test_cancel_only_own_literal_jobs():
