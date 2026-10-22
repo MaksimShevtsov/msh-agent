@@ -68,9 +68,26 @@ Run settings: commits {commit_state}; sandbox submissions {sandbox_state}.
 """
 
 
-def render_instructions(agent_name: str, allow_commit: bool, allow_sandbox: bool) -> str:
-    return INSTRUCTIONS.format(
+ADVISOR_INSTRUCTIONS = """
+## Your advisor
+You have an `advisor` tool backed by a stronger model. It sees ONLY what you put in the
+question -- not the workspace, not this conversation. Consult it at exactly two points:
+1. Before you commit to a contribution: list the 2-4 options you found, each with its
+   evidence (document ids/revisions, job ids, who already covers it, numbers you read),
+   and ask which is most useful and not duplicated.
+2. Before you publish (or, in read-only runs, before you report): paste the complete
+   draft plus the key evidence it rests on, and ask what is wrong, unsupported or missing.
+Act on the advice where it is backed by the evidence you gave; you remain responsible
+for every claim, and never cite the advisor as a source.
+"""
+
+
+def render_instructions(
+    agent_name: str, allow_commit: bool, allow_sandbox: bool, *, with_advisor: bool = False
+) -> str:
+    text = INSTRUCTIONS.format(
         agent_name=agent_name,
         commit_state="ENABLED" if allow_commit else "DISABLED (read-only run)",
         sandbox_state="ENABLED" if allow_sandbox else "DISABLED",
     )
+    return text + ADVISOR_INSTRUCTIONS if with_advisor else text

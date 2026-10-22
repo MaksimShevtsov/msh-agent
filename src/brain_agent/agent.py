@@ -18,6 +18,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
+from pydantic_ai_harness.advisor import Advisor
 from pydantic_ai_harness.compaction import SummarizingCompaction
 from pydantic_ai_harness.memory import Memory, SqliteMemoryStore
 from pydantic_ai_harness.planning import Planning
@@ -124,13 +125,23 @@ def build_agent(
     policy: Policy,
     run_budget_usd: Decimal,
     with_loop_status: bool = False,
+    advisor_model: str | None = None,
 ) -> Agent[BrainDeps, TickReport]:
+    # Hybrid: a cheap executor does the reading; a stronger advisor weighs in at the two
+    # decisions that matter. Local mode with a resolved Model keeps zai on its coding
+    # endpoint; no history is forwarded, so each consultation carries its own evidence.
+    advisor = (
+        [Advisor(resolve_model(advisor_model), mode="local", max_uses=1, max_tokens=4096)] if advisor_model else []
+    )
     agent = Agent(
         resolve_model(model) if isinstance(model, str) else model,
         deps_type=BrainDeps,
         output_type=TickReport,
-        instructions=render_instructions(agent_name, policy.allow_commit, policy.allow_sandbox),
+        instructions=render_instructions(
+            agent_name, policy.allow_commit, policy.allow_sandbox, with_advisor=bool(advisor_model)
+        ),
         capabilities=[
+            *advisor,
             # Stores that live on this host directly: workspace-backed ones need a
             # LocalWorkspace, which is POSIX-only, and the agent needs no host tools anyway.
             Planning(tools=["write_plan", "read_plan", "update_task_status"]),

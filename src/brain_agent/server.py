@@ -49,6 +49,7 @@ def create_app(settings: Settings | None = None) -> Starlette:
         policy=settings.policy,
         run_budget_usd=settings.run_budget_usd,
         with_loop_status=True,
+        advisor_model=settings.advisor_model,
     )
     client = BrainClient(settings.agent_key, os.environ.get("BRAIN_URL", DEFAULT_BASE_URL))
     threads: dict[str, BrainDeps] = {}

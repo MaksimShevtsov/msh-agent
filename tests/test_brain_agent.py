@@ -291,6 +291,35 @@ def test_eval_dataset_builds_and_grounding_checks_ids(monkeypatch):
     assert GroundedIds().evaluate(ctx) == 0.5  # d9999 was never seen
 
 
+async def test_hybrid_executor_consults_the_advisor(tmp_path: Path):
+    from brain_agent.evals import parse_variant
+
+    assert parse_variant("hy=zai:glm-5.3-flash+zai:glm-5.3") == ("hy", "zai:glm-5.3-flash", "zai:glm-5.3", None)
+    assert parse_variant("base=zai:glm-5.3-flash")[2] == ""  # no advisor
+    replies: list[str] = []
+
+    def executor(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        assert "advisor" in {t.name for t in info.function_tools}
+        if len(messages) == 1:
+            return ModelResponse(parts=[ToolCallPart("advisor", {"prompt": "Options: A (d1) or B (d2)?"})])
+        replies.append(str(messages[-1].parts[0].content))
+        return ModelResponse(
+            parts=[ToolCallPart("final_result", {"summary": "s", "committed": False, "next_step": "n"})]
+        )
+
+    agent = build_agent(
+        "test", agent_name="t", state_dir=tmp_path, policy=Policy(), run_budget_usd=Decimal("1"), advisor_model="test"
+    )
+    from brain_agent.prompts import render_instructions
+
+    assert "## Your advisor" in render_instructions("t", False, False, with_advisor=True)
+    assert "## Your advisor" not in render_instructions("t", False, False)
+    async with BrainClient("agt-x", server=FakeBrainServer()) as client:
+        deps = make_deps(client, Policy(), tmp_path)
+        await agent.run("go", deps=deps, model=FunctionModel(executor))
+    assert replies and replies[0]  # the advisor (TestModel) answered the consultation
+
+
 def test_cancel_only_own_literal_jobs():
     assert check_cancel('brain.sandbox.cancel("jabc", reason="x")', {"jabc"}) is None
     assert check_cancel('brain.sandbox.cancel("jzzz", reason="x")', {"jabc"})

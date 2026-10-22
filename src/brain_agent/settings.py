@@ -24,6 +24,7 @@ class Settings:
     agent_key: str
     agent_name: str
     model: str
+    advisor_model: str | None
     state_dir: Path
     policy: Policy
     rules: SandboxRules
@@ -35,6 +36,7 @@ class Settings:
             agent_key=os.environ.get("BRAIN_AGENT_KEY", "").strip(),
             agent_name=os.environ.get("BRAIN_AGENT_NAME", "msh-agent"),
             model=os.environ.get("BRAIN_MODEL", "zai:glm-5.3-flash"),
+            advisor_model=os.environ.get("BRAIN_ADVISOR_MODEL", "").strip() or None,
             state_dir=Path(os.environ.get("BRAIN_STATE_DIR", ROOT / "state")),
             policy=Policy(
                 allow_commit=_flag("BRAIN_ALLOW_COMMIT") and not read_only,

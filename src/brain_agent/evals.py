@@ -146,7 +146,9 @@ def build_dataset(case_names: list[str], judge_model: str) -> Dataset[str, TickO
     )
 
 
-def eval_task(settings: Settings, variant: str, model: str, extra: str | None, eval_dir: Path):
+def eval_task(
+    settings: Settings, variant: str, model: str, advisor: str, extra: str | None, eval_dir: Path
+):
     async def task(focus: str) -> TickOutput:
         # Each case runs from a copy of the real notebook, in its own state dir.
         state = eval_dir / variant / datetime.now(UTC).strftime("%H%M%S%f")
@@ -161,6 +163,7 @@ def eval_task(settings: Settings, variant: str, model: str, extra: str | None, e
             focus=focus,
             max_calls=40,
             model=model,
+            advisor_model=advisor,
             extra_instructions="\n\n".join(p for p in (DRAFT_ONLY, extra) if p),
         )
         transcript, failed = _transcript(tick.log_path)
@@ -186,12 +189,13 @@ def eval_task(settings: Settings, variant: str, model: str, extra: str | None, e
     return task
 
 
-def parse_variant(spec: str) -> tuple[str, str, str | None]:
-    """`name=model` or `name=model@path/to/extra_instructions.md`."""
+def parse_variant(spec: str) -> tuple[str, str, str, str | None]:
+    """`name=model[+advisor_model][@extra_instructions.md]`; no `+` means no advisor."""
     name, _, rest = spec.partition("=")
-    model, _, extra_path = rest.partition("@")
+    models, _, extra_path = rest.partition("@")
+    model, _, advisor = models.partition("+")
     extra = Path(extra_path).read_text(encoding="utf-8") if extra_path else None
-    return name, model, extra
+    return name, model, advisor, extra
 
 
 async def run_evals(
@@ -202,9 +206,9 @@ async def run_evals(
     dataset = build_dataset(case_names, judge_model)
     reports = []
     for spec in variants:
-        name, model, extra = parse_variant(spec)
+        name, model, advisor, extra = parse_variant(spec)
         report = await dataset.evaluate(
-            eval_task(settings, name, model, extra, eval_dir), name=name, max_concurrency=1, repeat=repeat
+            eval_task(settings, name, model, advisor, extra, eval_dir), name=name, max_concurrency=1, repeat=repeat
         )
         reports.append(report)
     rendered = []

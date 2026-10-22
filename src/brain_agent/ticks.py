@@ -44,10 +44,19 @@ async def run_tick(
     focus: str | None,
     max_calls: int,
     model: str | None = None,
+    advisor_model: str | None = None,
     extra_instructions: str | None = None,
 ) -> TickResult:
-    """Open a Brain session, run the agent once, always leave the session closed."""
-    settings = replace(settings, model=model or settings.model)
+    """Open a Brain session, run the agent once, always leave the session closed.
+
+    `model` / `advisor_model` override the settings for this tick (evals); pass
+    advisor_model="" to force no advisor.
+    """
+    settings = replace(
+        settings,
+        model=model or settings.model,
+        advisor_model=settings.advisor_model if advisor_model is None else (advisor_model or None),
+    )
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
     agent = build_agent(
         settings.model,
@@ -55,6 +64,7 @@ async def run_tick(
         state_dir=settings.state_dir,
         policy=settings.policy,
         run_budget_usd=settings.run_budget_usd,
+        advisor_model=settings.advisor_model,
     )
     async with BrainClient(settings.agent_key, os.environ.get("BRAIN_URL", DEFAULT_BASE_URL)) as client:
         session, start = await client.start(task)
@@ -75,7 +85,10 @@ async def run_tick(
             f"Operator focus for this tick: {focus or 'your judgement, per the workspace instructions'}"
         )
         try:
-            with logfire.span("tick {stamp}", stamp=stamp, session=session.handle, focus=focus, model=settings.model):
+            with logfire.span(
+                "tick {stamp}", stamp=stamp, session=session.handle, focus=focus,
+                model=settings.model, advisor=settings.advisor_model,
+            ):
                 result = await agent.run(
                     prompt, deps=deps, instructions=extra_instructions, usage_limits=USAGE_LIMITS
                 )
@@ -89,7 +102,8 @@ async def run_tick(
 def write_report(settings: Settings, tick: TickResult) -> dict:
     report = tick.report.model_dump()
     report.update(
-        stamp=tick.stamp, model=settings.model, role=tick.role, calls=tick.deps.calls, usage=str(tick.usage)
+        stamp=tick.stamp, model=settings.model, advisor=settings.advisor_model, role=tick.role,
+        calls=tick.deps.calls, usage=str(tick.usage),
     )
     reports = settings.state_dir / "reports"
     reports.mkdir(parents=True, exist_ok=True)
