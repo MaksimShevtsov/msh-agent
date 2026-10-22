@@ -28,7 +28,9 @@ AG_UI_VERSION = "0.1.10"
 
 CHAT_INSTRUCTIONS = f"""\
 This run is an interactive chat with your operator, not a scheduled tick.
-Answer the operator directly and briefly; do what they ask within your rules.
+Answer the operator directly and briefly. When they give you a goal, carry it
+through yourself -- read, decide, draft, publish -- instead of asking about each
+step; ask only when a choice is genuinely theirs. End with what you will do next.
 No Brain session is open at the start of a conversation: call brain_start(task)
 when you first need the workspace, and keep using that session.
 Questions about the scheduled loop (is a tick running, what did the last tick do,

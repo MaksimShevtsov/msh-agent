@@ -12,10 +12,10 @@ from pathlib import Path
 import logfire
 from pydantic_ai.usage import RunUsage, UsageLimits
 
+from brain_agent.agenda import parse_states, poll_program
 from brain_agent.agent import BrainDeps, TickReport, build_agent
 from brain_agent.client import DEFAULT_BASE_URL, BrainClient
 from brain_agent.settings import Settings
-
 
 # pydantic-ai stops a run at 50 model requests by default; bigger models take more,
 # shorter steps. Spend is bounded by SpendLimits and Brain calls by max_calls.
@@ -81,6 +81,7 @@ async def run_tick(
         prompt = (
             f"UTC now: {stamp}. You are connected as `{author}` (role `{role}`).\n"
             f"Your sandbox jobs so far:\n{deps.ledger.summary()}\n\n"
+            f"Your watches (FIRED ones come first on your ladder):\n{settings.agenda.render()}\n\n"
             f"Brain session start text:\n\n{start.output}\n\n"
             f"Operator focus for this tick: {focus or 'your judgement, per the workspace instructions'}"
         )
@@ -99,12 +100,29 @@ async def run_tick(
     return TickResult(stamp, role, author, result.output, result.usage, deps, log_path)
 
 
+async def poll_watches(settings: Settings) -> list[dict]:
+    """Between ticks: read the watched jobs' states (no model call); return the watches that fired."""
+    jobs = settings.agenda.pending_jobs()
+    if not jobs:
+        return []
+    async with BrainClient(settings.agent_key, os.environ.get("BRAIN_URL", DEFAULT_BASE_URL)) as client:
+        session, start = await client.start("Poll watched sandbox jobs (read-only)")
+        if session is None:
+            raise TickStartError(start.output)
+        try:
+            result = await client.run(session, poll_program(jobs))
+        finally:
+            await client.run(session, "brain.discard()")
+    return settings.agenda.update_states(parse_states(result.output) if result.ok else {})
+
+
 def write_report(settings: Settings, tick: TickResult) -> dict:
     report = tick.report.model_dump()
     report.update(
         stamp=tick.stamp, model=settings.model, advisor=settings.advisor_model, role=tick.role,
         calls=tick.deps.calls, usage=str(tick.usage),
     )
+    settings.agenda.replace(tick.report.watch, own_jobs=settings.ledger.ids())
     reports = settings.state_dir / "reports"
     reports.mkdir(parents=True, exist_ok=True)
     (reports / f"{tick.stamp}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

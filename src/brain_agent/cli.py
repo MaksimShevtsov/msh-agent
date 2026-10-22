@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 from dotenv import load_dotenv
 
@@ -14,7 +15,7 @@ from brain_agent.client import DEFAULT_BASE_URL, BrainClient
 from brain_agent.observability import configure as configure_observability
 from brain_agent.scorecard import scorecard
 from brain_agent.settings import ROOT, Settings
-from brain_agent.ticks import TickStartError, run_tick, write_report
+from brain_agent.ticks import TickStartError, poll_watches, run_tick, write_report
 
 
 async def tick(args: argparse.Namespace) -> int:
@@ -45,14 +46,29 @@ async def run_scorecard(args: argparse.Namespace) -> int:
 
 
 async def loop(args: argparse.Namespace) -> int:
-    """Tick forever, `--hours` apart; one failed tick never stops the loop."""
+    """Tick at least every `--hours`, and early when a watched job finishes.
+
+    Between ticks the watched jobs are polled every `--poll-minutes` with one cheap
+    read-only program. One failed tick or poll never stops the loop.
+    """
+    settings = Settings.from_env(read_only=args.read_only)
     while True:
         try:
             await tick(args)
         except Exception as exc:  # logged, then wait for the next slot
             print(f"tick failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         sys.stdout.flush()
-        await asyncio.sleep(args.hours * 3600)
+        deadline = time.monotonic() + args.hours * 3600
+        while (left := deadline - time.monotonic()) > 0:
+            await asyncio.sleep(min(args.poll_minutes * 60, left))
+            try:
+                fired = await poll_watches(settings)
+            except Exception as exc:
+                print(f"poll failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                continue
+            if fired:
+                print(f"woken by: {', '.join(f'{w['ref']} ({w['state']})' for w in fired)}")
+                break
 
 
 def main() -> None:
@@ -66,7 +82,8 @@ def main() -> None:
         p.add_argument("--read-only", action="store_true", help="force commits and sandbox off")
         p.add_argument("--max-calls", type=int, default=60)
         if name == "loop":
-            p.add_argument("--hours", type=float, default=3.0)
+            p.add_argument("--hours", type=float, default=1.0, help="longest gap between ticks")
+            p.add_argument("--poll-minutes", type=float, default=10.0, help="how often watched jobs are checked")
     p = sub.add_parser("scorecard", help="summarize ticks and check published work in Brain")
     p.add_argument("--offline", action="store_true", help="local logs only, no Brain session")
     p = sub.add_parser("eval", help="compare agent variants on read-only scenarios with an LLM judge")

@@ -1,10 +1,11 @@
 services:
-  # Scheduled contributor: one tick every 3 hours, no human in the loop.
+  # Scheduled contributor, no human in the loop: a tick at least hourly, and early
+  # when a watched sandbox job finishes (polled every 10 minutes without a model call).
   brain-agent:
     build: .
     image: brain-agent:local
     env_file: .env
-    command: ["loop", "--hours", "3"]
+    command: ["loop", "--hours", "1", "--poll-minutes", "10"]
     volumes:
       - ./state:/app/state
     restart: unless-stopped

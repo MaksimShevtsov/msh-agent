@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+from brain_agent.agenda import Agenda
 from brain_agent.agent import BrainDeps
 from brain_agent.client import BrainClient, Session
 from brain_agent.policy import Policy
@@ -53,6 +54,10 @@ class Settings:
     @property
     def ledger(self) -> JobLedger:
         return JobLedger(self.state_dir / "jobs.json")
+
+    @property
+    def agenda(self) -> Agenda:
+        return Agenda(self.state_dir / "agenda.json")
 
     def deps(self, client: BrainClient, *, session: Session | None, log_path: Path) -> BrainDeps:
         return BrainDeps(

@@ -26,6 +26,7 @@ from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 from pydantic_ai_harness.spend import Budget, SpendLimits
 from pydantic_ai_harness.tool_output_limits import LocalFileStore, ToolOutputLimits
 
+from brain_agent.agenda import Watch
 from brain_agent.approvals import APPROVAL_TOOL, Approvals
 from brain_agent.client import BrainClient, BrainError, RunResult, Session
 from brain_agent.loop_status import loop_status as read_loop_status
@@ -74,6 +75,11 @@ class TickReport(BaseModel):
     draft: str | None = Field(
         default=None,
         description="Read-only runs only: the full text you would have published (with its target path), else null.",
+    )
+    watch: list[Watch] = Field(
+        default_factory=list,
+        description="Everything you are waiting on. Job ids are polled every few minutes and wake you when they "
+        "finish; this list replaces the previous one, so repeat what you still watch.",
     )
 
 
@@ -244,8 +250,8 @@ def build_agent(
 
         @agent.tool_plain
         def loop_status() -> str:
-            """Status of the scheduled 3-hour loop on this machine: whether a tick is running now,
-            its latest programs and errors, the last finished tick's report, and your sandbox job ledger.
+            """Status of the scheduled loop on this machine: whether a tick is running now, its latest
+            programs and errors, the last finished tick's report, your sandbox job ledger and watches.
             Read-only; local state only (use brain_run for the workspace itself)."""
             return read_loop_status(state_dir)
 

@@ -2,16 +2,30 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 
+from brain_agent.agenda import Agenda, Watch, parse_states, poll_program
 from brain_agent.agent import BrainDeps, build_agent
 from brain_agent.approvals import APPROVAL_TOOL, Approvals
 from brain_agent.client import BrainClient, Session
 from brain_agent.loop_status import loop_status
-from brain_agent.scorecard import collect_ticks, published_paths
 from brain_agent.policy import Policy, check_source
-from brain_agent.sandbox_guard import JobLedger, SandboxRules, SubmitPlan, check_cancel, check_queue, plan_submit
+from brain_agent.sandbox_guard import (
+    JobLedger,
+    SandboxRules,
+    SubmitPlan,
+    check_cancel,
+    check_queue,
+    plan_submit,
+)
+from brain_agent.scorecard import collect_ticks, published_paths
 
 
 class FakeBrainServer:
@@ -360,3 +374,25 @@ async def test_submission_is_checked_recorded_on_commit_and_limited_per_tick(tmp
     assert "At most 1 sandbox submission" in replies[-1]
     sent = [args["source"] for name, args in server.calls if name == "brain_run"]
     assert not any("trials=100" in s for s in sent)
+
+
+def test_agenda_keeps_own_jobs_and_fires_once_when_a_job_leaves_the_queue(tmp_path: Path):
+    agenda = Agenda(tmp_path / "agenda.json")
+    agenda.replace([Watch(ref="jaaaaaaaa1", action="readout"), Watch(ref="d3066", action="re-read")], {"jbbbbbbbb2"})
+    assert agenda.pending_jobs() == ["jaaaaaaaa1", "jbbbbbbbb2"]  # own job added, doc ids not polled
+
+    assert agenda.update_states({"jaaaaaaaa1": "running", "jbbbbbbbb2": "unknown"}) == []
+    fired = agenda.update_states({"jaaaaaaaa1": "completed", "jbbbbbbbb2": "queued"})
+    assert [w["ref"] for w in fired] == ["jaaaaaaaa1"]
+    assert agenda.update_states({"jaaaaaaaa1": "completed"}) == []  # fires once
+    assert "FIRED jaaaaaaaa1 (state completed): readout" in agenda.render()
+
+    agenda.replace([], {"jbbbbbbbb2"})  # the agent cannot drop its own unfinished job
+    assert agenda.pending_jobs() == ["jbbbbbbbb2"]
+
+
+def test_poll_program_round_trip():
+    source = poll_program(["jaaaaaaaa1"])
+    assert "brain.sandbox.status(j)" in source and "'jaaaaaaaa1'" in source
+    assert parse_states('{"jaaaaaaaa1": "running"}\n') == {"jaaaaaaaa1": "running"}
+    assert parse_states("Traceback ...") == {}
