@@ -1,3 +1,4 @@
+import asyncio
 import json
 from decimal import Decimal
 from pathlib import Path
@@ -43,6 +44,7 @@ class FakeBrainServer:
         return None
 
     async def direct_call_tool(self, name: str, args: dict):
+        await asyncio.sleep(0)  # a real round trip yields, so concurrent runs can interleave
         self.calls.append((name, dict(args)))
         if self.fail_first:
             self.fail_first = False
@@ -396,3 +398,11 @@ def test_poll_program_round_trip():
     assert "brain.sandbox.status(j)" in source and "'jaaaaaaaa1'" in source
     assert parse_states('{"jaaaaaaaa1": "running"}\n') == {"jaaaaaaaa1": "running"}
     assert parse_states("Traceback ...") == {}
+
+
+async def test_concurrent_runs_get_distinct_seqs():
+    server = FakeBrainServer()
+    async with BrainClient("agt-x", server=server) as client:
+        session, _ = await client.start("t")
+        await asyncio.gather(*(client.run(session, f"print({i})") for i in range(3)))
+    assert [args["seq"] for name, args in server.calls if name == "brain_run"] == [1, 2, 3]

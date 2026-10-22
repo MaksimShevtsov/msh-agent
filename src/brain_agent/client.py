@@ -12,7 +12,8 @@ exposes two tools:
 The client owns ``seq`` so the model never has to: each response carries
 ``next_seq``, an uncertain run is resent with the *same* seq and source (the
 server returns the accepted receipt instead of executing twice), and a
-recorded error still consumes its seq.
+recorded error still consumes its seq. Runs are serialized: a model that
+calls the tool twice in one turn would otherwise send both with the same seq.
 
 Both tools answer with one text block holding the JSON envelope
 ``{code, output, data, notices}`` that the HTTP API uses too.
@@ -20,6 +21,7 @@ Both tools answer with one text block holding the JSON envelope
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -82,6 +84,7 @@ class BrainClient:
         # The toolset is used as a client only: the model gets our seq-managing
         # wrappers, never the raw brain_start/brain_run tools.
         self._server = server or MCPToolset(f"{base_url}/mcp/{agent_key}", tool_error_behavior="error")
+        self._run_lock = asyncio.Lock()
 
     async def __aenter__(self) -> BrainClient:
         await self._server.__aenter__()
@@ -110,12 +113,13 @@ class BrainClient:
         return session, result
 
     async def run(self, session: Session, source: str) -> RunResult:
-        args = {"session": session.handle, "seq": session.next_seq, "source": source}
-        try:
-            result = await self._call("brain_run", args)
-        except BrainError:
-            # Uncertain outcome: resend the identical request; an accepted run is
-            # returned from its receipt, never executed twice.
-            result = await self._call("brain_run", args)
-        session.next_seq = result.data.get("next_seq") or session.next_seq + 1
-        return result
+        async with self._run_lock:
+            args = {"session": session.handle, "seq": session.next_seq, "source": source}
+            try:
+                result = await self._call("brain_run", args)
+            except BrainError:
+                # Uncertain outcome: resend the identical request; an accepted run is
+                # returned from its receipt, never executed twice.
+                result = await self._call("brain_run", args)
+            session.next_seq = result.data.get("next_seq") or session.next_seq + 1
+            return result
