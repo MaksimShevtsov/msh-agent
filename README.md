@@ -23,6 +23,7 @@ The model sees only `brain_run(source)` and `brain_start(task)`.
 | `ToolOutputLimits` | spills big Brain outputs to `state/overflow` |
 | `SummarizingCompaction` | compacts history at 60 % of the model's window |
 | `RepairToolArguments` | fixes malformed tool JSON from small models |
+| `SystemReminders` | no model call, never stored in history: with ≤ 5 Brain calls left and a session open, counts down the calls and says the draft (and any staged submission) dies with the tick; with commits on, restates the pre-commit checklist (refresh, signature, shared files last, cite ids) every 8 requests. Logged as `reminder` (scorecard "reminders") |
 | `PromptInjectionDefender` (pattern tier) | withholds Brain output with planted instructions (`ignore previous…`, fake `<system>` tags); logged as `injection`. The ML tier is off: it withheld 13 % of real outputs |
 | `ToolCallJudge` + `CommitEvidence` | loop only: a second model (`BRAIN_COMMIT_JUDGE_MODEL`) reviews each commit against the server's diff; uncertain = blocked |
 | `TrajectoryJudge` | loop only: `BRAIN_TRAJECTORY_JUDGE_MODEL` reviews the last ~20k tokens every 6 requests, in the background, and steers off re-polling, repeated failures, budget drift and contradicted claims; logged as `review` (scorecard "steers"). An unavailable judge falls back to all-good (`review_unavailable`) instead of failing the tick |

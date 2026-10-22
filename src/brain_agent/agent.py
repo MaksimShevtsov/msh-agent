@@ -32,6 +32,7 @@ from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.prompt_injection_defender import PromptInjectionDefender
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 from pydantic_ai_harness.spend import Budget, SpendLimits
+from pydantic_ai_harness.system_reminders import Reminder, SystemReminders
 from pydantic_ai_harness.tool_call_judge import ToolCallJudge
 from pydantic_ai_harness.tool_output_limits import LocalFileStore, ToolOutputLimits
 from pydantic_ai_harness.trajectory_judge import (
@@ -293,6 +294,52 @@ async def _execute(ctx: RunContext[BrainDeps], source: str) -> str:
     return format_result(result)
 
 
+# A commit takes one call and its freshness check another. Below this a tick that keeps
+# reading loses its draft: the 20:06 tick spent 30/30 calls building a rider, committed
+# nothing, and reported the draft "intact for next tick" -- the tick's end discards it.
+_LOW_BUDGET = 5
+
+COMMIT_CHECKLIST = """\
+Before each brain_commit: `print(brain.refresh())` and search your target's ids for anything posted \
+since you started (cut yours to the new fact, or discard); sign new text as `{agent_name}` with a UTC \
+timestamp; touch LANES.md and roles/*.md only in the last program before the commit; every number \
+cites a document, revision or job id you read."""
+
+
+def _budget_reminder(ctx: RunContext[BrainDeps]) -> str | None:
+    """Count down the last Brain calls of a tick while a session (and its draft) is open."""
+    deps = ctx.deps
+    left = deps.max_calls - deps.calls
+    if deps.session is None or left > _LOW_BUDGET:
+        return None
+    if left <= 0:
+        text = (
+            "The Brain call budget is spent: no program runs any more, brain_commit included. The open "
+            "session is discarded when the tick ends. Write your report now and say plainly what was not "
+            "published; carry it in your notebook and `watch`."
+        )
+    elif deps.policy.allow_commit:
+        text = (
+            f"{left} Brain call(s) left this tick. The open session is discarded when the tick ends -- the "
+            "next tick cannot see its draft. If it holds work to publish, spend these on the freshness "
+            "check and brain_commit now; stop reading."
+        )
+    else:
+        text = f"{left} Brain call(s) left this tick. Put your draft in the report now; stop reading."
+    if deps.staged_jobs:
+        jobs = ", ".join(job["job"] for job in deps.staged_jobs)
+        text += f" Staged sandbox submission(s) {jobs} reach the queue only with that commit."
+    _log(deps, "reminder", which="budget", calls_left=left)
+    return f"<system-reminder>\n{text}\n</system-reminder>"
+
+
+def _log_checklist(ctx: RunContext[BrainDeps]) -> bool:
+    # Called only on the checklist's cadence, so it logs each fire. (Subscribing to
+    # ReminderFiredEvent instead would turn every run into a streamed one.)
+    _log(ctx.deps, "reminder", which="commit checklist")
+    return True
+
+
 def _trajectory_judge(
     model: str | Model, every: int, review_log: Callable[[dict], None]
 ) -> TrajectoryJudge[BrainDeps]:
@@ -375,6 +422,20 @@ def build_agent(
             SummarizingCompaction(max_fraction=0.6, keep_messages=16),
             # Small models (glm-flash) emit malformed tool JSON now and then.
             RepairToolArguments(),
+            # Instruction fade late in a tick: rules restated on the request tail, never stored in
+            # history and behind a cache point. No model call.
+            SystemReminders(
+                reminders=(
+                    [
+                        Reminder(
+                            COMMIT_CHECKLIST.format(agent_name=agent_name), interval=8, trigger=_log_checklist
+                        )
+                    ]
+                    if policy.allow_commit
+                    else []
+                ),
+                dynamic_reminders=[_budget_reminder],
+            ),
             # Other agents write the workspace. Pattern tier only: it flagged none of 282 real
             # Brain outputs, while the ML tier withheld 13 % of them (AGENTS.md, BASELINE, our
             # own diffs), so it would blind the agent. Polite, domain-shaped injections pass

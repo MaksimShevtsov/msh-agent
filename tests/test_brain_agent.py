@@ -530,6 +530,49 @@ async def test_an_unavailable_trajectory_judge_never_stops_the_tick(tmp_path: Pa
     assert {"kind": "review", "verdict": "ok"} in entries
 
 
+def _reading_model(seen: list[str], requests: int):
+    """Reads until `requests` model requests are made, recording what each request ends with."""
+
+    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(" ".join(str(getattr(part, "content", "")) for part in messages[-1].parts))
+        if len(seen) >= requests:
+            return ModelResponse(
+                parts=[ToolCallPart("final_result", {"summary": "s", "committed": False, "next_step": "n"})]
+            )
+        return ModelResponse(parts=[ToolCallPart("brain_run", {"source": "print(brain.read('d1'))"})])
+
+    return model
+
+
+async def test_low_call_budget_reminds_that_the_draft_dies_with_the_tick(tmp_path: Path):
+    seen: list[str] = []
+    policy = Policy(allow_commit=True)
+    agent = build_agent("test", agent_name="t", state_dir=tmp_path, policy=policy, run_budget_usd=Decimal("1"))
+    async with BrainClient("agt-x", server=FakeBrainServer()) as client:
+        deps = make_deps(client, policy, tmp_path)
+        deps.max_calls = 7
+        deps.staged_jobs = [{"job": "jabc123", "trials": 8, "session": "s1"}]
+        await agent.run("go", deps=deps, model=FunctionModel(_reading_model(seen, 9)))
+
+    assert "left this tick" not in seen[1]  # 6 calls left: quiet
+    assert "5 Brain call(s) left this tick" in seen[2] and "discarded when the tick ends" in seen[2]
+    assert "jabc123" in seen[2]
+    assert "budget is spent" in seen[7]
+    log = [json.loads(line) for line in deps.log_path.read_text(encoding="utf-8").splitlines()]
+    assert sum(e.get("which") == "budget" for e in log) == 7  # requests 3-9
+
+
+async def test_commit_checklist_is_repeated_only_when_commits_are_enabled(tmp_path: Path):
+    for policy, expected in ((Policy(allow_commit=True), True), (Policy(), False)):
+        seen: list[str] = []
+        agent = build_agent("test", agent_name="t", state_dir=tmp_path, policy=policy, run_budget_usd=Decimal("1"))
+        async with BrainClient("agt-x", server=FakeBrainServer()) as client:
+            await agent.run("go", deps=make_deps(client, policy, tmp_path), model=FunctionModel(_reading_model(seen, 9)))
+        assert ["Before each brain_commit" in s for s in seen] == [False] * 7 + [expected, False]
+        if expected:
+            assert "sign new text as `t`" in seen[7]
+
+
 def test_agenda_keeps_own_jobs_and_fires_once_when_a_job_leaves_the_queue(tmp_path: Path):
     agenda = Agenda(tmp_path / "agenda.json")
     agenda.replace([Watch(ref="jaaaaaaaa1", action="readout"), Watch(ref="d3066", action="re-read")], {"jbbbbbbbb2"})
