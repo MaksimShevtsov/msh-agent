@@ -4,6 +4,8 @@ import { useHumanInTheLoop, useRenderToolCall } from "@copilotkit/react-core";
 import { CopilotChat } from "@copilotkit/react-ui";
 
 import { ApprovalCard } from "@/components/approval-card";
+import { ChatPersistence } from "@/components/chat-persistence";
+import { startNewChat } from "@/lib/chat-storage";
 
 export default function Page() {
   // Commit / sandbox submit: the agent calls this frontend tool and waits for the click.
@@ -33,9 +35,21 @@ export default function Page() {
 
   return (
     <main className="mx-auto flex h-screen max-w-4xl flex-col px-4 py-4">
-      <header className="mb-3 flex items-baseline justify-between">
+      <ChatPersistence />
+      <header className="mb-3 flex items-baseline justify-between gap-4">
         <h1 className="text-lg font-semibold">msh-agent</h1>
-        <span className="text-xs opacity-60">BitGN Brain · ECOM1 · commits and sandbox runs need your approval</span>
+        <span className="flex-1 text-xs opacity-60">
+          BitGN Brain · ECOM1 · commits and sandbox runs need your approval
+        </span>
+        <button
+          onClick={() => {
+            startNewChat();
+            window.location.reload();
+          }}
+          className="rounded border border-neutral-400 px-3 py-1 text-xs"
+        >
+          New chat
+        </button>
       </header>
       <CopilotChat
         className="flex-1 overflow-hidden rounded-lg border border-neutral-300 dark:border-neutral-700"
