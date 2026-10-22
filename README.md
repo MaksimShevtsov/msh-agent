@@ -56,6 +56,25 @@ arguments. The server runs the program only when the conversation history carrie
 your answer for that exact program and session, and each approval works once.
 Chat logs go to `state/chat/`.
 
+### Measuring and improving the agent
+
+- **Tracing:** set `LOGFIRE_TOKEN` in `.env` and every tick and chat turn shows up in
+  Logfire as a tree of model requests, tool calls and MCP calls to Brain, with cost.
+  Without the token nothing is sent.
+- **`brain-agent scorecard`** (`--offline` for logs only) writes `state/scorecard.md`: per
+  tick cost, Brain calls, failed programs, timeouts, refusals and commits; then, read-only
+  in Brain, how many *other* documents cite each document the agent published (from ticks
+  or chat), and the state and score of sandbox jobs its reports point at -- the evidence
+  for checking its predictions.
+- **`brain-agent eval --variant base=zai:glm-5.3-flash --variant big=zai:glm-5.3`**
+  (optionally `name=model@extra_instructions.md` for prompt A/B, `--case choose|review|readout`,
+  `--judge MODEL`, `--repeat N`) runs each variant on read-only scenarios from a copy of
+  the notebook; the agent drafts instead of committing. Scored by cost, Brain calls,
+  failed-program rate, GroundedIds (ids in the draft that it actually saw) and an LLM
+  judge (grounded, useful, norms). The first variant is the baseline in the comparison
+  table; results land in `state/evals/<stamp>/`. The workspace is live, so compare
+  variants from the same eval run only.
+
 Every tick writes `state/runs/<stamp>.jsonl` (each program sent and its output)
 and `state/reports/<stamp>.json` (the agent's report). Without Docker:
 `uv sync`, `uv run pytest`, `uv run brain-agent tick --read-only`.

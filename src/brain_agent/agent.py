@@ -70,6 +70,10 @@ class TickReport(BaseModel):
     )
     committed: bool = Field(description="True only if brain.commit() succeeded in this session.")
     next_step: str = Field(description="The next useful thing for whoever (or whichever tick) comes next.")
+    draft: str | None = Field(
+        default=None,
+        description="Read-only runs only: the full text you would have published (with its target path), else null.",
+    )
 
 
 def format_result(result: RunResult) -> str:

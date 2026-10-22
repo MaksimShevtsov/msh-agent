@@ -1,4 +1,4 @@
-"""`brain-agent tick | loop | serve`."""
+"""`brain-agent tick | loop | scorecard | eval | serve`."""
 
 from __future__ import annotations
 
@@ -7,16 +7,14 @@ import asyncio
 import json
 import os
 import sys
-from datetime import UTC, datetime
 
-import logfire
 from dotenv import load_dotenv
 
-from brain_agent.agent import build_agent
 from brain_agent.client import DEFAULT_BASE_URL, BrainClient
 from brain_agent.observability import configure as configure_observability
 from brain_agent.scorecard import scorecard
 from brain_agent.settings import ROOT, Settings
+from brain_agent.ticks import TickStartError, run_tick, write_report
 
 
 async def tick(args: argparse.Namespace) -> int:
@@ -24,43 +22,13 @@ async def tick(args: argparse.Namespace) -> int:
     if not settings.agent_key:
         print("BRAIN_AGENT_KEY is not set (get one at https://bitgn.com/me/agents)", file=sys.stderr)
         return 2
-    stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
-    agent = build_agent(
-        settings.model,
-        agent_name=settings.agent_name,
-        state_dir=settings.state_dir,
-        policy=settings.policy,
-        run_budget_usd=settings.run_budget_usd,
-    )
-    async with BrainClient(settings.agent_key, os.environ.get("BRAIN_URL", DEFAULT_BASE_URL)) as client:
-        session, start = await client.start(args.task)
-        role = start.data.get("role")
-        print(f"session {session and session.handle} role={role} author={start.data.get('author')}")
-        if session is None:
-            print(start.output, file=sys.stderr)
-            return 1
-        deps = settings.deps(client, session=session, log_path=settings.state_dir / "runs" / f"{stamp}.jsonl")
-        deps.max_calls = args.max_calls
-        prompt = (
-            f"UTC now: {stamp}. You are connected as `{start.data.get('author')}` (role `{role}`).\n"
-            f"Your sandbox jobs so far:\n{deps.ledger.summary()}\n\n"
-            f"Brain session start text:\n\n{start.output}\n\n"
-            f"Operator focus for this tick: {args.focus or 'your judgement, per the workspace instructions'}"
-        )
-        try:
-            with logfire.span("tick {stamp}", stamp=stamp, session=session.handle, focus=args.focus):
-                result = await agent.run(prompt, deps=deps)
-        finally:
-            if deps.session is not None:
-                # Never leave a dangling draft session behind on the shared server.
-                await client.run(deps.session, "brain.discard()")
-    report = result.output.model_dump()
-    report.update(stamp=stamp, model=settings.model, role=role, calls=deps.calls, usage=str(result.usage))
-    (settings.state_dir / "reports").mkdir(parents=True, exist_ok=True)
-    (settings.state_dir / "reports" / f"{stamp}.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    try:
+        result = await run_tick(settings, task=args.task, focus=args.focus, max_calls=args.max_calls)
+    except TickStartError as exc:
+        print(f"could not start a Brain session: {exc}", file=sys.stderr)
+        return 1
+    print(f"tick {result.stamp} role={result.role} author={result.author}")
+    print(json.dumps(write_report(settings, result), ensure_ascii=False, indent=2))
     return 0
 
 
@@ -101,6 +69,16 @@ def main() -> None:
             p.add_argument("--hours", type=float, default=3.0)
     p = sub.add_parser("scorecard", help="summarize ticks and check published work in Brain")
     p.add_argument("--offline", action="store_true", help="local logs only, no Brain session")
+    p = sub.add_parser("eval", help="compare agent variants on read-only scenarios with an LLM judge")
+    p.add_argument(
+        "--variant",
+        action="append",
+        required=True,
+        help="name=model or name=model@extra_instructions.md; repeat; the first is the baseline",
+    )
+    p.add_argument("--case", action="append", choices=["choose", "review", "readout"], help="default: all")
+    p.add_argument("--judge", default=os.environ.get("BRAIN_JUDGE_MODEL", "zai:glm-5.3"))
+    p.add_argument("--repeat", type=int, default=1)
     p = sub.add_parser("serve", help="AG-UI server for the CopilotKit chat")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
@@ -113,4 +91,12 @@ def main() -> None:
         return
     if args.command == "scorecard":
         sys.exit(asyncio.run(run_scorecard(args)))
+    if args.command == "eval":
+        from brain_agent.evals import CASES, run_evals
+
+        text = asyncio.run(
+            run_evals(Settings.from_env(), args.variant, args.case or list(CASES), args.judge, args.repeat)
+        )
+        print(text)
+        return
     sys.exit(asyncio.run(loop(args) if args.command == "loop" else tick(args)))

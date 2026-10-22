@@ -275,6 +275,22 @@ def test_scorecard_counts_ticks_and_finds_what_was_published(tmp_path: Path):
     assert published_paths(tmp_path) == ["experiments/x/reviews/r.md", "findings/n.md"]
 
 
+def test_eval_dataset_builds_and_grounding_checks_ids(monkeypatch):
+    from pydantic_evals.evaluators import EvaluatorContext
+
+    from brain_agent.evals import GroundedIds, TickOutput, build_dataset
+
+    monkeypatch.setenv("ZAI_API_KEY", "test")
+    dataset = build_dataset(["choose", "review"], "zai:glm-5.3")
+    assert [c.name for c in dataset.cases] == ["choose", "review"]
+    out = TickOutput("v", "cites d3138 and d9999", "", "", "…tail only", ["d3138"], 0.1, 3, 0)
+    ctx = EvaluatorContext(
+        name="c", inputs="x", metadata=None, expected_output=None, output=out, duration=0.0,
+        _span_tree=None, attributes={}, metrics={},
+    )
+    assert GroundedIds().evaluate(ctx) == 0.5  # d9999 was never seen
+
+
 def test_cancel_only_own_literal_jobs():
     assert check_cancel('brain.sandbox.cancel("jabc", reason="x")', {"jabc"}) is None
     assert check_cancel('brain.sandbox.cancel("jzzz", reason="x")', {"jabc"})
