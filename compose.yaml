@@ -1,0 +1,32 @@
+services:
+  # Scheduled contributor: one tick every 3 hours, no human in the loop.
+  brain-agent:
+    build: .
+    image: brain-agent:local
+    env_file: .env
+    command: ["loop", "--hours", "3"]
+    volumes:
+      - ./state:/app/state
+    restart: unless-stopped
+
+  # AG-UI server for the chat; commits and sandbox submits wait for approval in the UI.
+  chat:
+    image: brain-agent:local
+    env_file: .env
+    command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - ./state:/app/state
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped
+
+  # CopilotKit chat UI at http://localhost:3000 (bound to localhost only).
+  ui:
+    build: ./ui
+    image: brain-agent-ui:local
+    environment:
+      AGENT_URL: http://chat:8000/
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on: [chat]
+    restart: unless-stopped
