@@ -9,6 +9,7 @@ from pathlib import Path
 
 from brain_agent.agenda import Agenda
 from brain_agent.agent import BrainDeps
+from brain_agent.claims import Claims
 from brain_agent.client import BrainClient, Session
 from brain_agent.policy import Policy
 from brain_agent.sandbox_guard import JobLedger, SandboxRules
@@ -59,7 +60,9 @@ class Settings:
     def agenda(self) -> Agenda:
         return Agenda(self.state_dir / "agenda.json")
 
-    def deps(self, client: BrainClient, *, session: Session | None, log_path: Path) -> BrainDeps:
+    def deps(
+        self, client: BrainClient, *, session: Session | None, log_path: Path, owner: str = "loop"
+    ) -> BrainDeps:
         return BrainDeps(
             client=client,
             policy=self.policy,
@@ -67,4 +70,5 @@ class Settings:
             log_path=log_path,
             ledger=self.ledger,
             rules=self.rules,
+            claims=Claims(self.state_dir / "claims.json", owner),
         )

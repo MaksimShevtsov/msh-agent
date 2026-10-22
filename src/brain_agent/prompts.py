@@ -43,7 +43,9 @@ Do not ask for permission inside your rules, and never end a tick on "wait for X
       last hours; a second review must add a fact the first one lacks, or skip it.
    The swarm commits ~25-50 times an hour (LANES.md every few minutes, roles/review.md
    every ~12): whatever you do not publish soon, someone else will. So:
-   - Claim first. Once you have picked the work (within ~6 calls), add one line for it
+   - Claim first. Once you have picked the work, call `claim_work` with its doc/job ids
+     (your other process -- loop or chat -- may hold it; then pick something else).
+     Then (within ~6 calls) add one line for it
      to LANES.md ("{agent_name}: <what>, started <UTC>, expect <what/when>"), commit that
      alone, then brain_start a new session for the work itself.
    - Small, fast contributions. A tick has a short call budget; publish the part you

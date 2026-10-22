@@ -28,6 +28,7 @@ from pydantic_ai_harness.tool_output_limits import LocalFileStore, ToolOutputLim
 
 from brain_agent.agenda import Watch
 from brain_agent.approvals import APPROVAL_TOOL, Approvals
+from brain_agent.claims import Claims
 from brain_agent.client import BrainClient, BrainError, RunResult, Session
 from brain_agent.loop_status import loop_status as read_loop_status
 from brain_agent.models import resolve_model
@@ -61,6 +62,8 @@ class BrainDeps:
     last_run_submitted: bool = False
     # Interactive (chat) runs: commit and submit wait for the operator's click.
     approvals: Approvals | None = None
+    # Shared with this agent's other process (loop <-> chat) so both never take the same work.
+    claims: Claims | None = None
 
 
 class TickReport(BaseModel):
@@ -245,6 +248,15 @@ def build_agent(
         deps.session = session
         _log(deps, "start", session=session and session.handle, task=task, role=result.data.get("role"))
         return format_result(result)
+
+    @agent.tool
+    async def claim_work(ctx: RunContext[BrainDeps], refs: list[str], what: str) -> str:
+        """Claim documents/jobs (ids like d3066, j...) before working on them, so your other
+        process (the scheduled loop or the operator chat) does not do the same work. Refused
+        when the other process holds a live claim on any of them: then pick something else."""
+        if ctx.deps.claims is None:
+            return "No claims store in this run; go ahead."
+        return ctx.deps.claims.claim(refs, what)
 
     if with_loop_status:
 

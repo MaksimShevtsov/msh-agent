@@ -35,7 +35,8 @@ No Brain session is open at the start of a conversation: call brain_start(task)
 when you first need the workspace, and keep using that session.
 Questions about the scheduled loop (is a tick running, what did the last tick do,
 which sandbox jobs are yours) go to `loop_status`; it needs no Brain session.
-Your notebook only has what finished ticks wrote, so check loop_status for the live state.
+Your notebook only has what finished ticks wrote, so check loop_status for the live state:
+the loop's watches and claims are its work -- claim_work before doing any of it yourself.
 Commits and sandbox submissions need the operator's approval: when brain_run
 answers "[approval required]", call `{APPROVAL_TOOL}` with the approval_id it gave
 and stop; after an approval, resend the identical program. Never claim an action
@@ -61,7 +62,10 @@ def create_app(settings: Settings | None = None) -> Starlette:
         if thread_id not in threads:
             stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
             threads[thread_id] = settings.deps(
-                client, session=None, log_path=settings.state_dir / "chat" / f"{stamp}-{thread_id[:8]}.jsonl"
+                client,
+                session=None,
+                log_path=settings.state_dir / "chat" / f"{stamp}-{thread_id[:8]}.jsonl",
+                owner=f"chat:{thread_id[:8]}",
             )
             threads[thread_id].approvals = approvals
             threads[thread_id].max_calls = 200

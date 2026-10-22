@@ -15,6 +15,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from brain_agent.agenda import Agenda, Watch, parse_states, poll_program
 from brain_agent.agent import BrainDeps, build_agent
 from brain_agent.approvals import APPROVAL_TOOL, Approvals
+from brain_agent.claims import Claims
 from brain_agent.client import BrainClient, Session
 from brain_agent.loop_status import loop_status
 from brain_agent.policy import Policy, check_source
@@ -406,3 +407,12 @@ async def test_concurrent_runs_get_distinct_seqs():
         session, _ = await client.start("t")
         await asyncio.gather(*(client.run(session, f"print({i})") for i in range(3)))
     assert [args["seq"] for name, args in server.calls if name == "brain_run"] == [1, 2, 3]
+
+
+def test_claims_keep_the_loop_and_the_chat_off_the_same_work(tmp_path: Path):
+    loop, chat = Claims(tmp_path / "claims.json", "loop"), Claims(tmp_path / "claims.json", "chat:aa26ec28")
+    assert loop.claim(["jcb45f1aa9c0743ea843416f1f01e46c9", "d3066"], "vlad arm A readout").startswith("Claimed")
+    refusal = chat.claim(["d3066"], "readout")
+    assert "Already being worked on" in refusal and "vlad arm A readout (loop" in refusal
+    assert loop.claim(["d3066"], "readout, part 2").startswith("Claimed")  # the owner may re-claim
+    assert chat.claim(["d4000"], "something else").startswith("Claimed")

@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from brain_agent.agenda import Agenda
+from brain_agent.claims import Claims
 from brain_agent.sandbox_guard import JobLedger
 
 MAX_SOURCE_CHARS = 160
@@ -69,4 +70,5 @@ def loop_status(state_dir: Path, tail: int = 12) -> str:
     lines.append(
         f"\nWatches (the loop wakes early when a watched job finishes):\n{Agenda(state_dir / 'agenda.json').render()}"
     )
+    lines.append(f"\nLive claims (loop and chat):\n{Claims(state_dir / 'claims.json', 'status').render()}")
     return "\n".join(lines)
